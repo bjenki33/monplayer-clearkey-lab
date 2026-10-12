@@ -68,6 +68,7 @@ final class CKTests: XCTestCase {
         original.replaceCurrentItem(with: replacement)
         XCTAssertTrue(original.currentItem === replacement)
         original.replaceCurrentItem(with: nil); XCTAssertNil(original.currentItem)
+        XCTAssertNotNil(CKRuntime.placeholderItem(), "registered routing must keep a valid nonnil item in the original UI")
     }
     func testDecodeSyntheticCENCFrameUsingSuppliedKey() throws {
         let bundle = Bundle(for: CKTests.self)

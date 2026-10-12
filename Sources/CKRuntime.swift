@@ -15,9 +15,13 @@ import UIKit
         guard let asset = item.asset as? AVURLAsset else { return false }; return routeURL(asset.url)
     }
     @objc(routeURL:) public static func routeURL(_ url: URL) -> Bool {
-        guard let channel = CKRegistry.shared.channel(url) else { return false }
+        guard placeholderItem() != nil, let channel = CKRegistry.shared.channel(url) else { return false }
         DispatchQueue.main.async { open(channel) }
         return true
+    }
+    @objc public static func placeholderItem() -> AVPlayerItem? {
+        guard let url = Bundle(for: CKRuntime.self).url(forResource: "CKPlaceholder", withExtension: "mp4") else { return nil }
+        return AVPlayerItem(url: url)
     }
     static func top() -> UIViewController? {
         let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }

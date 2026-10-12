@@ -20,6 +20,11 @@ static BOOL CKRoute(AVPlayerItem *item) {
     return item && [runtime respondsToSelector:@selector(route:)] &&
         ((BOOL (*)(id, SEL, id))objc_msgSend)(runtime, @selector(route:), item);
 }
+static AVPlayerItem *CKPlaceholder(void) {
+    Class runtime = CKRuntimeClass();
+    if ([runtime respondsToSelector:@selector(placeholderItem)]) return ((id (*)(id,SEL))objc_msgSend)(runtime,@selector(placeholderItem));
+    return nil;
+}
 static NSURLSessionDataTask *CKTask(id self, SEL cmd, NSURLRequest *request,
                                    void (^completion)(NSData *, NSURLResponse *, NSError *)) {
     // Observe the existing completion; never proxy, alter, retry or redirect requests.
@@ -70,18 +75,18 @@ static void CKDidComplete(id self, SEL cmd, NSURLSession *session, NSURLSessionT
 @end
 @implementation AVPlayer (CKHooks)
 - (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item {
-    if (CKRoute(item)) item = nil;
+    if (CKRoute(item)) item = CKPlaceholder();
     return [self ck_initWithPlayerItem:item];
 }
 - (instancetype)ck_initWithURL:(NSURL *)url {
     Class runtime = CKRuntimeClass();
     BOOL routed = [runtime respondsToSelector:@selector(routeURL:)] &&
         ((BOOL (*)(id, SEL, id))objc_msgSend)(runtime, @selector(routeURL:), url);
-    if (routed) return [self initWithPlayerItem:nil];
+    if (routed) return [self initWithPlayerItem:CKPlaceholder()];
     return [self ck_initWithURL:url];
 }
 - (void)ck_replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
-    if (CKRoute(item)) item = nil;
+    if (CKRoute(item)) item = CKPlaceholder();
     [self ck_replaceCurrentItemWithPlayerItem:item];
 }
 @end
