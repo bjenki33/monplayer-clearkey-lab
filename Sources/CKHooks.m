@@ -6,7 +6,6 @@
 
 static const void *CKTaskData = &CKTaskData;
 static IMP CKOriginalTask, CKOriginalData, CKOriginalComplete;
-static IMP CKOriginalInitPlayer, CKOriginalReplace;
 
 static Class CKRuntimeClass(void) { return NSClassFromString(@"CKRuntime"); }
 static void CKObserve(NSData *data, NSURL *url) {
@@ -54,13 +53,31 @@ static void CKDidComplete(id self, SEL cmd, NSURLSession *session, NSURLSessionT
     if (!error) CKObserve(data, task.response.URL ?: task.currentRequest.URL);
     ((void (*)(id, SEL, id, id, id))CKOriginalComplete)(self, cmd, session, task, error);
 }
-static id CKInitPlayer(id self, SEL cmd, AVPlayerItem *item) {
+@interface AVPlayer (CKHooks)
+- (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item __attribute__((objc_method_family(init)));
+- (instancetype)ck_initWithURL:(NSURL *)url __attribute__((objc_method_family(init)));
+- (void)ck_replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item;
+@end
+@implementation AVPlayer (CKHooks)
+- (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item {
     if (CKRoute(item)) item = nil;
-    return ((id (*)(id, SEL, id))CKOriginalInitPlayer)(self, cmd, item);
+    return [self ck_initWithPlayerItem:item];
 }
-static void CKReplace(id self, SEL cmd, AVPlayerItem *item) {
+- (instancetype)ck_initWithURL:(NSURL *)url {
+    Class runtime = CKRuntimeClass();
+    BOOL routed = [runtime respondsToSelector:@selector(routeURL:)] &&
+        ((BOOL (*)(id, SEL, id))objc_msgSend)(runtime, @selector(routeURL:), url);
+    if (routed) return [self initWithPlayerItem:nil];
+    return [self ck_initWithURL:url];
+}
+- (void)ck_replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
     if (CKRoute(item)) item = nil;
-    ((void (*)(id, SEL, id))CKOriginalReplace)(self, cmd, item);
+    [self ck_replaceCurrentItemWithPlayerItem:item];
+}
+@end
+static void CKExchange(Class target, SEL original, SEL replacement) {
+    Method a = class_getInstanceMethod(target, original), b = class_getInstanceMethod(target, replacement);
+    if (a && b) method_exchangeImplementations(a, b);
 }
 static IMP CKInstall(Class target, SEL selector, IMP replacement) {
     Method method = class_getInstanceMethod(target, selector);
@@ -78,8 +95,9 @@ __attribute__((constructor)) static void CKBootstrap(void) {
             CKOriginalData = CKInstall(delegate, @selector(URLSession:dataTask:didReceiveData:), (IMP)CKDidReceive);
             CKOriginalComplete = CKInstall(delegate, @selector(URLSession:task:didCompleteWithError:), (IMP)CKDidComplete);
         }
-        CKOriginalInitPlayer = CKInstall(AVPlayer.class, @selector(initWithPlayerItem:), (IMP)CKInitPlayer);
-        CKOriginalReplace = CKInstall(AVPlayer.class, @selector(replaceCurrentItemWithPlayerItem:), (IMP)CKReplace);
+        CKExchange(AVPlayer.class, @selector(initWithPlayerItem:), @selector(ck_initWithPlayerItem:));
+        CKExchange(AVPlayer.class, @selector(initWithURL:), @selector(ck_initWithURL:));
+        CKExchange(AVPlayer.class, @selector(replaceCurrentItemWithPlayerItem:), @selector(ck_replaceCurrentItemWithPlayerItem:));
         // UI is installed after launch, outside the loader's initialization stack.
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:NSOperationQueue.mainQueue
             usingBlock:^(NSNotification *note) {

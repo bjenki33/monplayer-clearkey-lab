@@ -11,14 +11,17 @@ import UIKit
         CKRegistry.shared.observe(data, source: source)
     }
     @objc(route:) public static func route(_ item: AVPlayerItem) -> Bool {
-        guard let asset = item.asset as? AVURLAsset, let channel = CKRegistry.shared.channel(asset.url) else { return false }
+        guard let asset = item.asset as? AVURLAsset else { return false }; return routeURL(asset.url)
+    }
+    @objc(routeURL:) public static func routeURL(_ url: URL) -> Bool {
+        guard let channel = CKRegistry.shared.channel(url) else { return false }
         DispatchQueue.main.async { open(channel) }
         return true
     }
     static func top() -> UIViewController? {
         let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }.flatMap { $0.windows }
-        var top = (windows.first { $0.isKeyWindow } ?? windows.first)?.rootViewController
+        var top = (windows.first { $0.isKeyWindow } ?? windows.first ?? UIApplication.shared.windows.first)?.rootViewController
         while let presented = top?.presentedViewController { top = presented }
         if let navigation = top as? UINavigationController { return navigation.visibleViewController }
         return top
@@ -193,7 +196,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     @objc func play() { layer?.play() }
     @objc func pause() { layer?.pause() }
     @objc func close() {
-        finished = true; keyTask?.cancel(); layer?.pause(); layer = nil
+        finished = true; keyTask?.cancel(); layer?.pause(); layer?.player.shutdown(); layer?.removeFromSuperview(); layer = nil
         UIApplication.shared.isIdleTimerDisabled = idleBefore
         dismiss(animated: true) { self.onClose?() }
     }

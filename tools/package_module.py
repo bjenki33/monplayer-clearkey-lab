@@ -12,6 +12,8 @@ def package(products, output):
     if not framework.is_dir():
         raise RuntimeError('Compiled CKBridge framework is missing')
     shutil.copytree(framework, output / framework.name, dirs_exist_ok=True)
+    for bundle in products.glob('*.bundle'):
+        shutil.copytree(bundle, output / bundle.name, dirs_exist_ok=True)
     # SPM may link libraries statically or copy dynamic XCFramework products.
     for framework in products.rglob('*.framework'):
         if framework.name == 'CKBridge.framework' or framework.parent.name.endswith('.framework'):

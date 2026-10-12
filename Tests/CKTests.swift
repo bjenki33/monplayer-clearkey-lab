@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Libavcodec
 import Libavformat
 import Libavutil
 import XCTest
@@ -56,5 +57,50 @@ final class CKTests: XCTestCase {
         var obj: UnsafeMutableRawPointer? = UnsafeMutableRawPointer(mutating: format.pointee.priv_class)
         let option = av_opt_find(&obj, "cenc_decryption_key", nil, 0, AV_OPT_SEARCH_FAKE_OBJ)
         XCTAssertNotNil(option)
+    }
+    func testOriginalAVPlayerInitAndReplaceStillWork() {
+        let url = URL(string: "https://example.invalid/unprotected.mp4")!
+        let original = AVPlayer(url: url)
+        XCTAssertEqual((original.currentItem?.asset as? AVURLAsset)?.url, url)
+        let replacement = AVPlayerItem(url: URL(string: "https://example.invalid/second.m3u8")!)
+        original.replaceCurrentItem(with: replacement)
+        XCTAssertTrue(original.currentItem === replacement)
+        original.replaceCurrentItem(with: nil); XCTAssertNil(original.currentItem)
+    }
+    func testDecodeSyntheticCENCFrameUsingSuppliedKey() throws {
+        let bundle = Bundle(for: CKTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "manifest", withExtension: "mpd", subdirectory: "Fixtures"))
+        var context: UnsafeMutablePointer<AVFormatContext>?
+        var options: OpaquePointer?
+        av_dict_set(&options, "cenc_decryption_key", key, 0)
+        av_dict_set(&options, "protocol_whitelist", "file,crypto,data", 0)
+        let opened = avformat_open_input(&context, url.path, nil, &options)
+        av_dict_free(&options)
+        XCTAssertEqual(opened, 0); guard opened == 0, let context else { return }
+        var toClose: UnsafeMutablePointer<AVFormatContext>? = context
+        defer { avformat_close_input(&toClose) }
+        XCTAssertGreaterThanOrEqual(avformat_find_stream_info(context, nil), 0)
+        var decoder: UnsafePointer<AVCodec>?
+        let video = av_find_best_stream(context, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0)
+        XCTAssertGreaterThanOrEqual(video, 0); guard video >= 0, let decoder else { return }
+        var codec = avcodec_alloc_context3(decoder)
+        defer { avcodec_free_context(&codec) }
+        XCTAssertEqual(avcodec_parameters_to_context(codec, context.pointee.streams[Int(video)]!.pointee.codecpar), 0)
+        XCTAssertEqual(avcodec_open2(codec, decoder, nil), 0)
+        var packet = av_packet_alloc(), frame = av_frame_alloc()
+        defer { av_packet_free(&packet); av_frame_free(&frame) }
+        var decoded = false
+        for _ in 0..<100 {
+            if av_read_frame(context, packet) < 0 { break }
+            if packet?.pointee.stream_index == video, avcodec_send_packet(codec, packet) >= 0,
+               avcodec_receive_frame(codec, frame) == 0, let frame {
+                XCTAssertEqual(frame.pointee.width, 128); XCTAssertEqual(frame.pointee.height, 72)
+                let luma = try XCTUnwrap(frame.pointee.data.0)
+                XCTAssertLessThanOrEqual(abs(Int(luma[0]) - 81), 3, "decrypted synthetic red frame must have expected luma")
+                decoded = true; av_packet_unref(packet); break
+            }
+            av_packet_unref(packet)
+        }
+        XCTAssertTrue(decoded, "no usable frame decoded from encrypted synthetic fixture")
     }
 }

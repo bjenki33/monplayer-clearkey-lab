@@ -23,6 +23,16 @@ jobs:
             fi
           done
           exit 1
+      - name: Generate synthetic encrypted media only
+        run: |
+          if ! command -v ffmpeg >/dev/null; then brew install ffmpeg; fi
+          mkdir -p Tests/Fixtures
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=red:size=128x72:rate=10 \
+            -t 3 -c:v libx264 -pix_fmt yuv420p -g 10 -an -f dash -seg_duration 1 \
+            -use_template 1 -use_timeline 1 \
+            -format_options encryption_scheme=cenc-aes-ctr:encryption_key=101112131415161718191a1b1c1d1e1f:encryption_kid=000102030405060708090a0b0c0d0e0f \
+            Tests/Fixtures/manifest.mpd
+          python3 -c 'from pathlib import Path; p=Path("Tests/Fixtures"); assert any(b"senc" in x.read_bytes() or b"tenc" in x.read_bytes() for x in p.glob("*.m4s")), "fixture is not encrypted"'
       - name: Generate framework and test host
         run: |
           brew install xcodegen
