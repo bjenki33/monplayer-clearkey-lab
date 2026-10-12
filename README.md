@@ -18,6 +18,17 @@ are stored in this repository or supplied to CI.
 - No Widevine/PlayReady, CDM key extraction or license-policy bypass.
 - No claim of restored MonPlayer source or tested physical-device playback.
 
+## CK2 Changes
+
+- Explicit LGPL zlib support for gzip/deflate manifests; automatic dependency
+  detection is disabled and must not silently drop HTTP compression support.
+- Ephemeral URLSession manifest validation follows source redirects before
+  opening the player. TLS verification remains enabled; no guessed CDN URLs.
+- Safe stage/code diagnostics without private URLs or key/error descriptions.
+  Initial buffering has a 30-second deadline and Play can retry a failed open.
+- Native regression cases decode owned CENC video through gzip and HTTP
+  redirects on a loopback-only fixture server. CI never uses private channels.
+
 ## Engine and Licenses
 
 KSPlayer is pinned to commit3558c7645240a191c3e4672eabe7b6ae1ee4f4ae,

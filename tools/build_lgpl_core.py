@@ -57,7 +57,7 @@ def main():
                     '--disable-gpl', '--disable-nonfree', '--disable-version3',
                     '--disable-autodetect', '--disable-programs', '--disable-doc', '--disable-debug',
                     '--disable-shared', '--enable-static', '--enable-pic', '--enable-securetransport',
-                    '--enable-videotoolbox', '--enable-audiotoolbox', '--enable-libxml2',
+                    '--enable-videotoolbox', '--enable-audiotoolbox', '--enable-libxml2', '--enable-zlib',
                     '--disable-avdevice', '--disable-indevs', '--disable-outdevs',
                     '--disable-filters', '--enable-filter=aformat,amix,anull,aresample,atempo,volume,abuffer,abuffersink,buffer,buffersink,format,scale,vflip,hflip,null,setpts',
                     '--disable-decoders', '--enable-decoder=h264,hevc,aac,aac_latm,ac3,eac3,mp3,mp3float,opus,vorbis,flac,alac,pcm_s16le,pcm_s16be',
@@ -68,6 +68,8 @@ def main():
             config = (build / 'ffbuild/config.mak').read_text()
             if re.search(r'(?m)^CONFIG_(GPL|NONFREE|VERSION3)=yes$', config):
                 raise RuntimeError('Unapproved FFmpeg license configuration')
+            if not re.search(r'(?m)^CONFIG_ZLIB=yes$', config):
+                raise RuntimeError('HTTP gzip support must be explicitly enabled')
             run('make', '-j', str(max(2, os.cpu_count() or 2)), cwd=build, env=env)
             run('make', 'install', cwd=build, env=env)
         for lib in LIBS:

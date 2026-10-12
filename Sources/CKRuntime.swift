@@ -56,6 +56,7 @@ import UIKit
             button.widthAnchor.constraint(equalToConstant: 72), button.heightAnchor.constraint(equalToConstant: 32)
         ])
         panelButton = button
+        CKDiagnostic.trace("panel installed")
     }
     @objc static func showPanel() {
         guard active == nil, let presenter = top() else { return }
@@ -127,6 +128,9 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     let status = UILabel()
     var layer: KSPlayerLayer?
     var keyTask: URLSessionDataTask?
+    var manifestTask: URLSessionDataTask?
+    var watchdog: DispatchWorkItem?
+    var openingStream = false
     var onClose: (() -> Void)?
     var finished = false
     private var idleBefore = false
@@ -154,9 +158,14 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         resolve()
     }
     func resolve() {
+        guard !finished, !openingStream else { return }
+        openingStream = true
+        status.text = "CK2: resolving provider-supplied key..."
+        CKDiagnostic.trace("key request started")
         let source = channel.keySource.split(separator: "|", maxSplits: 1).map(String.init)
         guard let url = URL(string: source[0]), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            do { try start(CKKeys.defaultKey(CKKeys.parse(Data(channel.keySource.utf8)))) } catch { fail(error) }; return
+            do { openManifest(key: try CKKeys.defaultKey(CKKeys.parse(Data(channel.keySource.utf8)))) }
+            catch { fail(error, stage: .key) }; return
         }
         var headers = channel.headers
         if source.count == 2 { CKPlaylist.mergeHeaders(source[1], into: &headers) }
@@ -168,15 +177,37 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             session.finishTasksAndInvalidate()
             DispatchQueue.main.async {
                 guard let self, !self.finished else { return }
-                guard error == nil, let data, data.count <= 1024 * 1024,
-                      let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
-                    self.fail(CKFailure.network); return
+                if let error { self.fail(error, stage: .key); return }
+                guard let data, data.count <= 1024 * 1024, let response = response as? HTTPURLResponse else {
+                    self.fail(CKFailure.network, stage: .key); return
                 }
-                do { try self.start(CKKeys.defaultKey(CKKeys.parse(data))) } catch { self.fail(error) }
+                guard (200..<300).contains(response.statusCode) else { self.fail(CKOpenFailure.http(response.statusCode), stage: .key); return }
+                do { self.openManifest(key: try CKKeys.defaultKey(CKKeys.parse(data))) }
+                catch { self.fail(error, stage: .key) }
             }
         }; keyTask?.resume()
     }
-    func start(_ key: String) throws {
+    func openManifest(key: String) {
+        status.text = "CK2: checking DASH/HLS and source redirects..."
+        CKDiagnostic.trace("manifest request started")
+        var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        let config = URLSessionConfiguration.ephemeral; config.urlCache = nil; config.httpCookieStorage = nil
+        let session = URLSession(configuration: config)
+        manifestTask = session.dataTask(with: request) { [weak self] data, response, error in
+            session.finishTasksAndInvalidate()
+            DispatchQueue.main.async {
+                guard let self, !self.finished else { return }
+                if let error { self.fail(error, stage: .manifest); return }
+                guard let data, let response = response as? HTTPURLResponse else { self.fail(CKFailure.network, stage: .manifest); return }
+                do {
+                    let url = try CKManifest.validatedURL(data, response: response)
+                    self.start(key, url: url)
+                } catch { self.fail(error, stage: .manifest) }
+            }
+        }; manifestTask?.resume()
+    }
+    func start(_ key: String, url: URL) {
         guard !finished else { return }
         KSOptions.logLevel = .panic
         av_log_set_level(AV_LOG_QUIET)
@@ -188,33 +219,49 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         options.formatContextOptions["decryption_key"] = key
         options.formatContextOptions["rw_timeout"] = 20_000_000
         options.formatContextOptions["tls_verify"] = 1
-        let player = KSPlayerLayer(url: channel.url, options: options, delegate: self)
+        CKDiagnostic.trace("validated manifest; player starting")
+        let player = KSPlayerLayer(url: url, options: options, delegate: self)
         layer = player; player.translatesAutoresizingMaskIntoConstraints = false; view.insertSubview(player, at: 0)
         NSLayoutConstraint.activate([
             player.leadingAnchor.constraint(equalTo: view.leadingAnchor), player.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "Opening DASH/ClearKey on-device. No server-side conversion."
+        status.text = "CK2: opening DASH/ClearKey on-device..."
+        watchdog?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
+        watchdog = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
         player.play()
     }
-    func fail(_ error: Error) {
-        // Never present NSError descriptions: network errors can include private URLs.
-        if case CKFailure.multipleKeys = error { status.text = "This prototype supports one distinct key. Multi-key stream is not supported yet." }
-        else if case CKFailure.invalidKey = error { status.text = "Provider response is not a supported ClearKey key map/JWKS." }
-        else { status.text = "ClearKey playback failed. Check access, headers and the stream format." }
+    func fail(_ error: Error, stage: CKStage = .playback) {
+        guard !finished else { return }
+        watchdog?.cancel(); watchdog = nil; openingStream = false
+        let player = layer; layer = nil
+        player?.pause(); player?.player.shutdown(); player?.removeFromSuperview()
+        status.text = CKDiagnostic.message(error, stage: stage)
+        CKDiagnostic.trace(status.text ?? "playback error")
     }
-    @objc func play() { layer?.play() }
+    @objc func play() { if let layer { layer.play() } else { resolve() } }
     @objc func pause() { layer?.pause() }
     @objc func close() {
-        finished = true; keyTask?.cancel(); layer?.pause(); layer?.player.shutdown(); layer?.removeFromSuperview(); layer = nil
+        finished = true; keyTask?.cancel(); manifestTask?.cancel(); watchdog?.cancel()
+        layer?.pause(); layer?.player.shutdown(); layer?.removeFromSuperview(); layer = nil
         UIApplication.shared.isIdleTimerDisabled = idleBefore
         dismiss(animated: true) { self.onClose?() }
     }
     func player(layer: KSPlayerLayer, state: KSPlayerState) {
-        status.text = "ClearKey test: \(state.description)."
+        guard layer === self.layer, !finished else { return }
+        if state == .bufferFinished { watchdog?.cancel(); watchdog = nil; openingStream = false }
+        status.text = "CK2: \(state.description)."
+        CKDiagnostic.trace("player state: \(state.description)")
     }
-    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {}
-    func player(layer: KSPlayerLayer, finish error: Error?) { if let error { fail(error) } }
+    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+        if layer === self.layer, currentTime > 0 { watchdog?.cancel(); watchdog = nil }
+    }
+    func player(layer: KSPlayerLayer, finish error: Error?) {
+        guard layer === self.layer, !finished else { return }
+        if let error { fail(error) }
+    }
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {}
 }

@@ -55,6 +55,7 @@ final class CKTests: XCTestCase {
     func testFFmpegDASHCencOptionActuallyExists() {
         XCTAssertTrue(String(cString: avformat_license()).hasPrefix("LGPL"))
         XCTAssertTrue(String(cString: avcodec_license()).hasPrefix("LGPL"))
+        XCTAssertTrue(String(cString: avformat_configuration()).contains("--enable-zlib"))
         guard let format = av_find_input_format("dash") else { return XCTFail("DASH is missing from the compiled playback engine") }
         var obj: UnsafeMutableRawPointer? = UnsafeMutableRawPointer(mutating: format.pointee.priv_class)
         let option = av_opt_find(&obj, "cenc_decryption_key", nil, 0, AV_OPT_SEARCH_FAKE_OBJ)
@@ -73,11 +74,34 @@ final class CKTests: XCTestCase {
     func testDecodeSyntheticCENCFrameUsingSuppliedKey() throws {
         let bundle = Bundle(for: CKTests.self)
         let url = try XCTUnwrap(bundle.url(forResource: "manifest", withExtension: "mpd", subdirectory: "Fixtures"))
+        try decodeFixture(url.path, protocols: "file,crypto,data")
+    }
+    func testDecodeGzipCENCManifestOverHTTP() throws {
+        try decodeFixture("http://127.0.0.1:18761/gzip/manifest.mpd", protocols: "http,tcp,crypto,data")
+    }
+    func testDecodeRedirectedGzipCENCManifestOverHTTP() throws {
+        try decodeFixture("http://127.0.0.1:18761/redirect.php", protocols: "http,tcp,crypto,data")
+    }
+    func testManifestValidationAndSafeDiagnostics() throws {
+        let url = URL(string: "https://example.invalid/final/live.mpd")!
+        let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+        XCTAssertEqual(try CKManifest.validatedURL(Data("<MPD type=\"dynamic\"/>".utf8), response: response), url)
+        XCTAssertThrowsError(try CKManifest.validatedURL(Data("<html>error</html>".utf8), response: response))
+        let bad = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: nil))
+        XCTAssertThrowsError(try CKManifest.validatedURL(Data("<MPD/>".utf8), response: bad))
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotFindHost,
+                            userInfo: [NSLocalizedDescriptionKey: "PRIVATE_KEY_AND_URL", NSURLErrorFailingURLStringErrorKey: "SECRET_URL"])
+        let text = CKDiagnostic.message(error, stage: .manifest)
+        XCTAssertTrue(text.contains("-1003")); XCTAssertFalse(text.contains("PRIVATE")); XCTAssertFalse(text.contains("SECRET"))
+        XCTAssertTrue(CKDiagnostic.message(CKOpenFailure.startupTimeout, stage: .playback).contains("30 seconds"))
+    }
+    private func decodeFixture(_ path: String, protocols: String) throws {
         var context: UnsafeMutablePointer<AVFormatContext>?
         var options: OpaquePointer?
         av_dict_set(&options, "cenc_decryption_key", key, 0)
-        av_dict_set(&options, "protocol_whitelist", "file,crypto,data", 0)
-        let opened = avformat_open_input(&context, url.path, nil, &options)
+        av_dict_set(&options, "protocol_whitelist", protocols, 0)
+        av_dict_set(&options, "rw_timeout", "10000000", 0)
+        let opened = avformat_open_input(&context, path, nil, &options)
         av_dict_free(&options)
         XCTAssertEqual(opened, 0); guard opened == 0, let context else { return }
         var toClose: UnsafeMutablePointer<AVFormatContext>? = context

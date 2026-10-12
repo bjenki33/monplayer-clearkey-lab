@@ -79,7 +79,7 @@ def package(base, module, output, report):
                 info = plistlib.loads(data)
                 info['CFBundleIdentifier'] += '.cktest'
                 info['CFBundleDisplayName'] = 'MonPlayer CK TEST'
-                info['CFBundleVersion'] = '132001'
+                info['CFBundleVersion'] = '132002'
                 data = plistlib.dumps(info, fmt=plistlib.FMT_BINARY); changed.append(name)
             new.writestr(entry, data)
         for path in sorted(module.rglob('*')):
