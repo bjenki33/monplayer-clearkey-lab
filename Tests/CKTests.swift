@@ -130,4 +130,12 @@ final class CKTests: XCTestCase {
         }
         XCTAssertTrue(decoded, "no usable frame decoded from encrypted synthetic fixture")
     }
+    func testNestedDiagnosticsRevealCodesNotPrivateDescriptions() {
+        let nested = NSError(domain: "Private-domain", code: -875574520,
+                             userInfo: [NSLocalizedDescriptionKey: "PRIVATE_URL_AND_KEY"])
+        let error = NSError(domain: "KSPlayerErrorDomain", code: 2,
+                            userInfo: [NSUnderlyingErrorKey: nested, NSURLErrorFailingURLStringErrorKey: "SECRET"])
+        let text = CKDiagnostic.message(error, stage: .playback)
+        XCTAssertTrue(text.contains("2/-875574520")); XCTAssertFalse(text.contains("PRIVATE")); XCTAssertFalse(text.contains("SECRET"))
+    }
 }

@@ -162,9 +162,9 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         openingStream = true
         status.text = "CK2: resolving provider-supplied key..."
         CKDiagnostic.trace("key request started")
-        let source = channel.keySource.split(separator: "|", maxSplits: 1).map(String.init)
+        let source = channel.keySource.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         guard let url = URL(string: source[0]), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            do { openManifest(key: try CKKeys.defaultKey(CKKeys.parse(Data(channel.keySource.utf8)))) }
+            do { openManifest(key: try CKKeys.defaultKey(CKKeys.parse(Data(source[0].utf8)))) }
             catch { fail(error, stage: .key) }; return
         }
         var headers = channel.headers

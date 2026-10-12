@@ -48,7 +48,13 @@ enum CKDiagnostic {
             }
         }
         // Never expose localized errors, userInfo, headers, URLs or provider keys.
-        return "\(step) failed (code \(code)). Check source access and stream format."
+        var codes = [code], nested = (error as NSError).userInfo[NSUnderlyingErrorKey] as? Error
+        for _ in 0..<3 {
+            guard let current = nested else { break }
+            let underlying = current as NSError
+            codes.append(underlying.code); nested = underlying.userInfo[NSUnderlyingErrorKey] as? Error
+        }
+        return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
     static func trace(_ message: String) { NSLog("[CKBridge CK2] %@", message) }
 }
