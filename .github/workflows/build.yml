@@ -1,0 +1,60 @@
+name: Build isolated ClearKey prototype
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: clearkey-prototype
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          for app in $(find /Applications -maxdepth 1 -name 'Xcode*.app' | sort -r); do
+            export DEVELOPER_DIR="$app/Contents/Developer"
+            if [[ $(xcrun --sdk iphoneos --show-sdk-version | cut -d. -f1) -ge 26 ]]; then
+              echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Generate framework and test host
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Compile device module
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project CKBridge.xcodeproj -scheme CKBridge -configuration Release -sdk iphoneos \
+            -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build/device-build.log
+      - name: Run native module tests
+        run: |
+          set -o pipefail
+          simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
+          xcodebuild -project CKBridge.xcodeproj -scheme CKHost -configuration Debug \
+            -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build/simulator \
+            -resultBundlePath build/CKTests.xcresult CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee build/native-tests.log
+      - name: Package framework only, never third-party IPA or private sources
+        run: python3 tools/package_module.py build/device/Build/Products/Release-iphoneos build/module
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClearKey-module
+          path: build/module
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClearKey-build-evidence
+          path: |
+            build/*.log
+            build/CKTests.xcresult
+          retention-days: 7

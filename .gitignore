@@ -1,0 +1,11 @@
+build/
+DerivedData/
+.build/
+*.ipa
+*.zip
+*.xcresult/
+*.xcframework/
+*.framework/
+__pycache__/
+.DS_Store
+private/
