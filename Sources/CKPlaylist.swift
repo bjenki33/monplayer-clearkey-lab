@@ -65,7 +65,7 @@ enum CKPlaylist {
             if safe(name) && safe(value) { headers[name] = value }
         }
     }
-    static func safe(_ text: String) -> Bool { !text.contains("\r") && !text.contains("\n") && !text.contains("\0") }
+    static func safe(_ text: String) -> Bool { text.unicodeScalars.allSatisfy { ![0, 10, 13].contains($0.value) } }
 }
 
 enum CKKeys {
