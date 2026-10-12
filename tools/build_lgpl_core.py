@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tarfile
 import urllib.request
@@ -74,9 +75,11 @@ def main():
             slice_name = 'ios-arm64_arm64e' if label == 'device' else 'ios-arm64_x86_64-simulator'
             target = package / 'Sources' / f'Lib{lib}.xcframework' / slice_name / framework / f'Lib{lib}'
             if label == 'device':
+                target.chmod(stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
                 shutil.copy2(prefix / 'lib' / f'lib{lib}.a', target)
     for lib in LIBS:
         target = package / 'Sources' / f'Lib{lib}.xcframework/ios-arm64_x86_64-simulator/Lib{lib}.framework/Lib{lib}'
+        target.chmod(stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
         run('lipo', '-create', str(root / 'output/sim-arm64/lib' / f'lib{lib}.a'),
             str(root / 'output/sim-x64/lib' / f'lib{lib}.a'), '-output', str(target))
     for label, *_ in triples:

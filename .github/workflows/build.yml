@@ -49,14 +49,21 @@ jobs:
         with:
           path: build/packages
           key: ks3558-ff61-macos15-packages-v1
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: core-cache
         with:
           path: build/ffmpeg-lgpl/output
-          key: ffmpeg61-lgpl-ios155-xcode26-v2
+          key: ffmpeg61-lgpl-ios155-xcode26-v2-${{ github.run_id }}
+          restore-keys: ffmpeg61-lgpl-ios155-xcode26-v2-
       - name: Rebuild LGPL-only playback core
         run: |
           set -o pipefail
           python3 tools/build_lgpl_core.py 2>&1 | tee build/lgpl-core.log
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: build/ffmpeg-lgpl/output
+          key: ffmpeg61-lgpl-ios155-xcode26-v2-${{ github.run_id }}
       - name: Compile device module
         run: |
           set -o pipefail
