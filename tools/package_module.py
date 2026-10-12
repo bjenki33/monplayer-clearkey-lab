@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 
@@ -16,12 +17,16 @@ def package(products, output):
     notice.mkdir(exist_ok=True)
     license = Path('build/ffmpeg-lgpl/output/device/LICENSE.LGPLv2.1')
     shutil.copy2(license, notice / 'FFmpeg-LGPLv2.1.txt')
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     (notice / 'SOURCE.txt').write_text(
         'FFmpeg6.1 official source SHA256:488c76e57dd9b3bee901f71d5c95eaf1db4a5a31fe46a28654e837144207c270\n'
         'Source:https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz\n'
         'Configuration:tools/build_lgpl_core.py in this bridge source repository.\n'
+        'Local LGPL modification:tools/ffmpeg_cenc_multikey.py; supplied-key MOV/DASH maps and cipher cache reset.\n'
+        'This is modified FFmpeg6.1,not an unmodified upstream release.\n'
         'KSPlayer LGPL2.1 source:https://github.com/kingslay/KSPlayer/tree/3558c7645240a191c3e4672eabe7b6ae1ee4f4ae\n'
         'FFmpegKit Swift wrapper:https://github.com/kingslay/FFmpegKit/tree/6.1.0\n'
+        'Exact bridge/build source:https://github.com/bjenki33/monplayer-clearkey-lab/tree/' + revision + '\n'
         'Bridge sources/relinking instructions:https://github.com/bjenki33/monplayer-clearkey-lab\n')
     for bundle in products.glob('*.bundle'):
         shutil.copytree(bundle, output / bundle.name, dirs_exist_ok=True)
