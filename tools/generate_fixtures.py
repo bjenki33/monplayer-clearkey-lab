@@ -56,7 +56,13 @@ def main(root):
              '-c:a', 'aac', '-ac', '1', '-b:a', '96k', '-vn']
     dash(multi / 'audio/manifest.mpd', audio, KID2, KEY2)
     dash(multi / 'reference/manifest.mpd', audio)
-    ffmpeg('-i', multi / 'reference/manifest.mpd', '-map', '0:a:0', '-c:a', 'pcm_f32le',
+    reference = multi / 'reference'
+    # Homebrew's host FFmpeg may omit the DASH reader; MOV still reads these
+    # exact owned fragmented-MP4 packets without changing the audio reference.
+    reference_movie = reference / 'reference.mp4'
+    fragments = [reference / 'init-stream0.m4s', *sorted(reference.glob('chunk-stream0-*.m4s'))]
+    reference_movie.write_bytes(b''.join(part.read_bytes() for part in fragments))
+    ffmpeg('-i', reference_movie, '-map', '0:a:0', '-c:a', 'pcm_f32le',
            '-f', 'f32le', multi / 'audio-reference.f32')
     manifest = ET.parse(multi / 'video/manifest.mpd')
     period = manifest.getroot().find(f'{{{NS}}}Period')

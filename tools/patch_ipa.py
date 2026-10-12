@@ -50,8 +50,10 @@ def dylib_command(path):
     return struct.pack('<IIIIII', 0xc, size, 24, 0, 0x10000, 0x10000) + name + bytes(size - 24 - len(name))
 
 
-def package(base, module, output, report):
+def package(base, module, output, report, build):
     base, module, output, report = map(Path, (base, module, output, report))
+    if not build.isascii() or not build.isdecimal() or int(build) <= 132002:
+        raise ValueError('New experimental build must be explicitly supplied and newer than CK2')
     digest = hashlib.sha256(base.read_bytes()).hexdigest()
     if digest != BASE_SHA256:
         raise ValueError('Base does not match the previously patched, audited IPA')
@@ -79,7 +81,7 @@ def package(base, module, output, report):
                 info = plistlib.loads(data)
                 info['CFBundleIdentifier'] += '.cktest'
                 info['CFBundleDisplayName'] = 'MonPlayer CK TEST'
-                info['CFBundleVersion'] = '132002'
+                info['CFBundleVersion'] = build
                 data = plistlib.dumps(info, fmt=plistlib.FMT_BINARY); changed.append(name)
             new.writestr(entry, data)
         for path in sorted(module.rglob('*')):
@@ -107,6 +109,7 @@ def package(base, module, output, report):
     if hashlib.sha256(base.read_bytes()).hexdigest() != digest:
         raise ValueError('Original base was modified')
     result = {'base_sha256': digest, 'output_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
+              'build': build, 'version': info['CFBundleShortVersionString'], 'bundle': info['CFBundleIdentifier'],
               'changed': changed, 'removed_signatures': removed, 'added': added,
               'scope': 'unsigned experimental arm64 IPA; physical playback not established'}
     report.write_text(json.dumps(result, indent=2))
@@ -117,4 +120,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     for field in ('base', 'module', 'output', 'report'):
         parser.add_argument(field)
+    parser.add_argument('--build', required=True)
     package(**vars(parser.parse_args()))
