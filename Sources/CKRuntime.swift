@@ -259,9 +259,9 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         status.text = "CK2: \(state.description)."
         CKDiagnostic.trace("player state: \(state.description)")
     }
-    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
-        if layer === self.layer, currentTime > 0 { watchdog?.cancel(); watchdog = nil }
-    }
+    // Audio timestamps can advance while video is still buffering; only the
+    // bufferFinished state above is allowed to disarm the startup deadline.
+    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {}
     func player(layer: KSPlayerLayer, finish error: Error?) {
         guard layer === self.layer, !finished else { return }
         if let error { fail(error) }
