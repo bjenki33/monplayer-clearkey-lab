@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tarfile
 import urllib.request
+from ffmpeg_cenc_multikey import apply as apply_multikey
 
 SHA256 = '488c76e57dd9b3bee901f71d5c95eaf1db4a5a31fe46a28654e837144207c270'
 LIBS = ['avcodec', 'avfilter', 'avformat', 'avutil', 'swresample', 'swscale']
@@ -33,15 +34,21 @@ def main():
                 if root not in target.parents or member.issym() or member.islnk():
                     raise RuntimeError('Unsafe source archive')
             tar.extractall(root)
+    apply_multikey(source)
     package = Path('build/packages/checkouts/FFmpegKit').resolve()
     if not (package / 'Sources').is_dir():
         raise RuntimeError('Resolve pinned Swift package first')
     triples = [('device', 'iphoneos', 'arm64', 'arm64-apple-ios15.5'),
                ('sim-arm64', 'iphonesimulator', 'arm64', 'arm64-apple-ios15.5-simulator'),
                ('sim-x64', 'iphonesimulator', 'x86_64', 'x86_64-apple-ios15.5-simulator')]
+    identity = hashlib.sha256(Path(__file__).read_bytes() + Path(__file__).with_name('ffmpeg_cenc_multikey.py').read_bytes()).hexdigest()
     for label, sdk_name, arch, triple in triples:
         prefix = root / 'output' / label
-        if not all((prefix / 'lib' / f'lib{x}.a').is_file() for x in LIBS):
+        cached = all((prefix / 'lib' / f'lib{x}.a').is_file() for x in LIBS)
+        stamp = prefix / 'ck-build-identity.txt'
+        if cached and (not stamp.is_file() or stamp.read_text().strip() != identity):
+            raise RuntimeError('Core cache belongs to different source; use a fresh build/cache key')
+        if not cached:
             build = root / label; build.mkdir(parents=True, exist_ok=True)
             sdk = subprocess.check_output(['xcrun', '--sdk', sdk_name, '--show-sdk-path'], text=True).strip()
             clang = subprocess.check_output(['xcrun', '--sdk', sdk_name, '--find', 'clang'], text=True).strip()
@@ -72,6 +79,7 @@ def main():
                 raise RuntimeError('HTTP gzip support must be explicitly enabled')
             run('make', '-j', str(max(2, os.cpu_count() or 2)), cwd=build, env=env)
             run('make', 'install', cwd=build, env=env)
+            stamp.write_text(identity + '\n')
         for lib in LIBS:
             framework = f'Lib{lib}.framework'
             slice_name = 'ios-arm64_arm64e' if label == 'device' else 'ios-arm64_x86_64-simulator'
@@ -87,7 +95,7 @@ def main():
     for label, *_ in triples:
         notice = root / 'output' / label / 'LICENSE.LGPLv2.1'
         shutil.copy2(source / 'COPYING.LGPLv2.1', notice)
-    print('PASS: device and simulator package cores replaced by rebuilt LGPL FFmpeg6.1')
+    print('PASS: cores replaced by LGPL FFmpeg6.1 with supplied-key KID map modification')
 
 
 if __name__ == '__main__':

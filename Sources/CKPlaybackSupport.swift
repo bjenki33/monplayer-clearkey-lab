@@ -4,16 +4,22 @@ enum CKStage: String { case key, manifest, playback }
 enum CKOpenFailure: Error { case http(Int), invalidManifest, startupTimeout }
 
 enum CKManifest {
-    static func validatedURL(_ data: Data, response: HTTPURLResponse) throws -> URL {
+    enum Kind { case dash, hls }
+    static func validatedURL(_ data: Data, response: HTTPURLResponse, keySet: CKKeySet? = nil) throws -> URL {
         guard (200..<300).contains(response.statusCode) else { throw CKOpenFailure.http(response.statusCode) }
         guard data.count <= 2 * 1024 * 1024, let url = response.url,
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw CKOpenFailure.invalidManifest }
+        let kind = try kind(data)
+        if keySet?.requiresKeyMap == true, kind != .dash { throw CKFailure.unsupportedMultiKeyManifest }
+        return url
+    }
+    static func kind(_ data: Data) throws -> Kind {
         if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines
-            .union(CharacterSet(charactersIn: "\u{feff}"))).hasPrefix("#EXTM3U") == true { return url }
+            .union(CharacterSet(charactersIn: "\u{feff}"))).hasPrefix("#EXTM3U") == true { return .hls }
         let reader = RootReader(), parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false; parser.delegate = reader
         guard parser.parse(), reader.root == "MPD" else { throw CKOpenFailure.invalidManifest }
-        return url
+        return .dash
     }
     private final class RootReader: NSObject, XMLParserDelegate {
         var root: String?
@@ -34,7 +40,8 @@ enum CKDiagnostic {
             case .startupTimeout: return "Video startup timed out after 30 seconds. Tap Play to retry."
             }
         }
-        if case CKFailure.multipleKeys = error { return "Provider key: multiple distinct keys are not supported in CK2." }
+        if case CKFailure.multipleKeys = error { return "Provider key: one-key-only operation received multiple distinct keys." }
+        if case CKFailure.unsupportedMultiKeyManifest = error { return "Manifest: CK3 multikey playback currently requires DASH/CENC. HLS multikey is not implemented." }
         if case CKFailure.invalidKey = error { return "Provider key: unsupported key map/JWKS response." }
         let code = (error as NSError).code
         if (error as NSError).domain == NSURLErrorDomain {
@@ -56,5 +63,5 @@ enum CKDiagnostic {
         }
         return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
-    static func trace(_ message: String) { NSLog("[CKBridge CK2] %@", message) }
+    static func trace(_ message: String) { NSLog("[CKBridge CK3] %@", message) }
 }

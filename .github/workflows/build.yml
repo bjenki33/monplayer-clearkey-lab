@@ -26,13 +26,7 @@ jobs:
       - name: Generate synthetic encrypted media only
         run: |
           if ! command -v ffmpeg >/dev/null; then brew install ffmpeg; fi
-          mkdir -p Tests/Fixtures
-          ffmpeg -hide_banner -loglevel error -f lavfi -i color=red:size=128x72:rate=10 \
-            -t 3 -c:v libx264 -pix_fmt yuv420p -g 10 -an -f dash -seg_duration 1 \
-            -use_template 1 -use_timeline 1 \
-            -format_options encryption_scheme=cenc-aes-ctr:encryption_key=101112131415161718191a1b1c1d1e1f:encryption_kid=000102030405060708090a0b0c0d0e0f \
-            Tests/Fixtures/manifest.mpd
-          python3 -c 'from pathlib import Path; p=Path("Tests/Fixtures"); assert any(b"senc" in x.read_bytes() or b"tenc" in x.read_bytes() for x in p.glob("*.m4s")), "fixture is not encrypted"'
+          python3 tools/generate_fixtures.py Tests/Fixtures
           mkdir -p Sources/Assets
           ffmpeg -hide_banner -loglevel error -f lavfi -i color=black:size=32x32:rate=1/30 \
             -t 28800 -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart Sources/Assets/CKPlaceholder.mp4
@@ -56,17 +50,19 @@ jobs:
         id: core-cache
         with:
           path: build/ffmpeg-lgpl/output
-          key: ffmpeg61-lgpl-ios155-xcode26-gzip-v3-${{ github.run_id }}
-          restore-keys: ffmpeg61-lgpl-ios155-xcode26-gzip-v3-
+          key: ffmpeg61-lgpl-ios155-xcode26-multikey-v4-${{ hashFiles('tools/build_lgpl_core.py', 'tools/ffmpeg_cenc_multikey.py') }}-${{ github.run_id }}
+          restore-keys: ffmpeg61-lgpl-ios155-xcode26-multikey-v4-${{ hashFiles('tools/build_lgpl_core.py', 'tools/ffmpeg_cenc_multikey.py') }}-
       - name: Rebuild LGPL-only playback core
         run: |
           set -o pipefail
           python3 tools/build_lgpl_core.py 2>&1 | tee build/lgpl-core.log
+          CK_FFMPEG_SOURCE_ARCHIVE=build/ffmpeg-lgpl/ffmpeg-6.1.tar.xz \
+            python3 -m unittest discover -s tools -p test_ffmpeg_backport.py -v
       - uses: actions/cache/save@v4
         if: always()
         with:
           path: build/ffmpeg-lgpl/output
-          key: ffmpeg61-lgpl-ios155-xcode26-gzip-v3-${{ github.run_id }}
+          key: ffmpeg61-lgpl-ios155-xcode26-multikey-v4-${{ hashFiles('tools/build_lgpl_core.py', 'tools/ffmpeg_cenc_multikey.py') }}-${{ github.run_id }}
       - name: Compile device module
         run: |
           set -o pipefail

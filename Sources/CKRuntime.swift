@@ -161,11 +161,11 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func resolve() {
         guard !finished, !openingStream else { return }
         openingStream = true
-        status.text = "CK2: resolving provider-supplied key..."
+        status.text = "CK3: resolving provider-supplied keys..."
         CKDiagnostic.trace("key request started")
         let source = channel.keySource.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         guard let url = URL(string: source[0]), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            do { openManifest(key: try CKKeys.defaultKey(CKKeys.parse(Data(source[0].utf8)))) }
+            do { openManifest(keys: try CKKeySet(CKKeys.parse(Data(source[0].utf8)))) }
             catch { fail(error, stage: .key) }; return
         }
         var headers = channel.headers
@@ -184,13 +184,13 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
                     self.fail(CKFailure.network, stage: .key); return
                 }
                 guard (200..<300).contains(response.statusCode) else { self.fail(CKOpenFailure.http(response.statusCode), stage: .key); return }
-                do { self.openManifest(key: try CKKeys.defaultKey(CKKeys.parse(data))) }
+                do { self.openManifest(keys: try CKKeySet(CKKeys.parse(data))) }
                 catch { self.fail(error, stage: .key) }
             }
         }; keyTask?.resume()
     }
-    func openManifest(key: String) {
-        status.text = "CK2: checking DASH/HLS and source redirects..."
+    func openManifest(keys: CKKeySet) {
+        status.text = "CK3: checking DASH/HLS and source redirects..."
         CKDiagnostic.trace("manifest request started")
         var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
@@ -204,13 +204,13 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
                 if let error { self.fail(error, stage: .manifest); return }
                 guard let data, let response = response as? HTTPURLResponse else { self.fail(CKFailure.network, stage: .manifest); return }
                 do {
-                    let url = try CKManifest.validatedURL(data, response: response)
-                    self.start(key, url: url)
+                    let url = try CKManifest.validatedURL(data, response: response, keySet: keys)
+                    self.start(keys, url: url)
                 } catch { self.fail(error, stage: .manifest) }
             }
         }; manifestTask?.resume()
     }
-    func start(_ key: String, url: URL) {
+    func start(_ keys: CKKeySet, url: URL) {
         guard !finished else { return }
         KSOptions.logLevel = .panic
         av_log_set_level(AV_LOG_QUIET)
@@ -218,8 +218,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         let options = KSOptions(); options.isAutoPlay = false; options.hardwareDecode = true
         options.preferredForwardBufferDuration = 3; options.maxBufferDuration = 12
         options.appendHeader(channel.headers)
-        options.formatContextOptions["cenc_decryption_key"] = key
-        options.formatContextOptions["decryption_key"] = key
+        keys.formatOptions.forEach { options.formatContextOptions[$0.key] = $0.value }
         options.formatContextOptions["rw_timeout"] = 20_000_000
         options.formatContextOptions["tls_verify"] = 1
         CKDiagnostic.trace("validated manifest; player starting")
@@ -230,7 +229,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK2: opening DASH/ClearKey on-device..."
+        status.text = "CK3: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         watchdog?.cancel()
         let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
         watchdog = timeout
@@ -256,7 +255,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard layer === self.layer, !finished else { return }
         if state == .bufferFinished { watchdog?.cancel(); watchdog = nil; openingStream = false }
-        status.text = "CK2: \(state.description)."
+        status.text = "CK3: \(state.description)."
         CKDiagnostic.trace("player state: \(state.description)")
     }
     // Audio timestamps can advance while video is still buffering; only the

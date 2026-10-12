@@ -1,7 +1,7 @@
 import Foundation
 
 enum CKFailure: Error {
-    case invalidPlaylist, invalidKey, unsupportedDRM, multipleKeys, network, unsupportedLicense
+    case invalidPlaylist, invalidKey, unsupportedDRM, multipleKeys, network, unsupportedLicense, unsupportedMultiKeyManifest
 }
 
 struct CKChannel {
@@ -79,8 +79,10 @@ enum CKKeys {
         return Data(base64Encoded: value + String(repeating: "=", count: (4 - value.count % 4) % 4))
     }
     static func parse(_ data: Data) throws -> [String: String] {
+        guard data.count <= 1024 * 1024 else { throw CKFailure.invalidKey }
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let entries = object["keys"] as? [[String: Any]] {
+                guard entries.count <= 128 else { throw CKFailure.invalidKey }
                 var result: [String: String] = [:]
                 for entry in entries {
                     guard (entry["kty"] as? String) == "oct", let kid = entry["kid"] as? String,
@@ -92,15 +94,19 @@ enum CKKeys {
                 guard !result.isEmpty else { throw CKFailure.invalidKey }; return result
             }
             var result: [String: String] = [:]
+            guard object.count <= 128 else { throw CKFailure.invalidKey }
             for (kid, value) in object {
                 guard let key = value as? String, let id = normalized(kid), let normalizedKey = normalized(key) else { throw CKFailure.invalidKey }
+                if let previous = result[id], previous != normalizedKey { throw CKFailure.invalidKey }
                 result[id] = normalizedKey
             }
             guard !result.isEmpty else { throw CKFailure.invalidKey }; return result
         }
         guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { throw CKFailure.invalidKey }
         var result: [String: String] = [:]
-        for pair in text.split(separator: ",") {
+        let pairs = text.split(separator: ",", omittingEmptySubsequences: false)
+        guard pairs.count <= 128 else { throw CKFailure.invalidKey }
+        for pair in pairs {
             let parts = pair.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
             guard parts.count == 2, let kid = normalized(parts[0]), let key = normalized(parts[1]) else { throw CKFailure.invalidKey }
             if let previous = result[kid], previous != key { throw CKFailure.invalidKey }; result[kid] = key

@@ -1,0 +1,153 @@
+"""Add bounded KID selection to pinned FFmpeg 6.1 without changing public ABI.
+
+This is a local LGPL modification, not an upstream FFmpeg release. Public
+option names follow FFmpeg's documented MOV/DASH multikey interface. The
+sample-key cache is invalidated on key changes; no missing-key fallback is
+allowed when a map is supplied. Input must be exact official 6.1 source.
+"""
+import hashlib
+from pathlib import Path
+
+
+ORIGINAL = {
+    'isom.h': '182d718cbd56f8d38f4f0f03b506b5c621e085ffee7664857aebc12161050ee3',
+    'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
+    'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
+}
+MARKER = '/* CKBridge multikey v1: supplied keys only. */\n'
+
+KEY_SELECTION = r'''
+static int ck_hex_key(const char *text, uint8_t out[16])
+{
+    int i, nibble, value;
+    if (!text || strlen(text) != 32)
+        return AVERROR(EINVAL);
+    for (i = 0; i < 32; i++) {
+        unsigned char ch = text[i];
+        if (ch >= '0' && ch <= '9') value = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') value = ch - 'a' + 10;
+        else if (ch >= 'A' && ch <= 'F') value = ch - 'A' + 10;
+        else return AVERROR(EINVAL);
+        nibble = i & 1;
+        if (!nibble) out[i / 2] = value << 4;
+        else out[i / 2] |= value;
+    }
+    return 0;
+}
+
+static int ck_select_sample_key(MOVContext *c, MOVStreamContext *sc,
+                                const AVEncryptionInfo *sample)
+{
+    uint8_t key[16];
+    if (c->decryption_keys) {
+        char kid[33];
+        const AVDictionaryEntry *entry;
+        if (!sample || !sample->key_id || sample->key_id_size != 16)
+            return AVERROR_INVALIDDATA;
+        ff_data_to_hex(kid, sample->key_id, 16, 1);
+        entry = av_dict_get(c->decryption_keys, kid, NULL, AV_DICT_MATCH_CASE);
+        if (!entry || ck_hex_key(entry->value, key) < 0) {
+            av_log(c->fc, AV_LOG_ERROR, "No valid supplied key for encrypted sample\n");
+            return AVERROR_INVALIDDATA;
+        }
+    } else {
+        if (!c->decryption_key || c->decryption_key_len != sizeof(key))
+            return AVERROR(EINVAL);
+        memcpy(key, c->decryption_key, sizeof(key));
+    }
+    if (!sc->cenc.active_key_valid || memcmp(sc->cenc.active_key, key, sizeof(key))) {
+        av_aes_ctr_free(sc->cenc.aes_ctr);
+        sc->cenc.aes_ctr = NULL;
+        av_freep(&sc->cenc.aes_ctx);
+        memcpy(sc->cenc.active_key, key, sizeof(key));
+        sc->cenc.active_key_valid = 1;
+    }
+    return 0;
+}
+
+'''
+
+
+def replace(text, before, after, count=1):
+    if text.count(before) != count:
+        raise RuntimeError('Pinned FFmpeg patch context changed')
+    return text.replace(before, after)
+
+
+def transform(name, text):
+    if name == 'isom.h':
+        text = replace(text, '        struct AVAES *aes_ctx;\n',
+                       '        struct AVAES *aes_ctx;\n'
+                       '        uint8_t active_key[16];\n'
+                       '        int active_key_valid;\n')
+        text = replace(text, '    int decryption_key_len;\n',
+                       '    int decryption_key_len;\n    AVDictionary *decryption_keys;\n')
+    elif name == 'mov.c':
+        signature = 'static int cenc_scheme_decrypt('
+        text = replace(text, signature, KEY_SELECTION + signature)
+        text = replace(text, 'av_aes_ctr_init(sc->cenc.aes_ctr, c->decryption_key)',
+                       'av_aes_ctr_init(sc->cenc.aes_ctr, sc->cenc.active_key)', count=2)
+        text = replace(text, 'av_aes_init(sc->cenc.aes_ctx, c->decryption_key, 16 * 8, 1)',
+                       'av_aes_init(sc->cenc.aes_ctx, sc->cenc.active_key, 16 * 8, 1)', count=2)
+        signature = ('static int cenc_decrypt(MOVContext *c, MOVStreamContext *sc, '
+                     'AVEncryptionInfo *sample, uint8_t *input, int size)\n{\n')
+        text = replace(text, signature, signature +
+                       '    int ret = ck_select_sample_key(c, sc, sample);\n'
+                       '    if (ret < 0) return ret;\n')
+        text = replace(text, '        if (mov->decryption_key) {\n',
+                       '        if (mov->decryption_key || mov->decryption_keys) {\n')
+        text = replace(text, '        av_encryption_info_free(sc->cenc.default_encrypted_sample);\n'
+                       '        av_aes_ctr_free(sc->cenc.aes_ctr);\n',
+                       '        av_encryption_info_free(sc->cenc.default_encrypted_sample);\n'
+                       '        av_aes_ctr_free(sc->cenc.aes_ctr);\n'
+                       '        av_freep(&sc->cenc.aes_ctx);\n')
+        option = ('    { "decryption_key", "The media decryption key (hex)", OFFSET(decryption_key), '
+                  'AV_OPT_TYPE_BINARY, .flags = AV_OPT_FLAG_DECODING_PARAM },\n')
+        text = replace(text, option, option +
+                       '    { "decryption_keys", "Supplied media keys by KID (hex)", '
+                       'OFFSET(decryption_keys), AV_OPT_TYPE_DICT, .flags = AV_OPT_FLAG_DECODING_PARAM },\n')
+    elif name == 'dashdec.c':
+        text = replace(text, '    char *cenc_decryption_key;\n',
+                       '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n')
+        forward = ('    if (c->cenc_decryption_key)\n'
+                   '        av_dict_set(&in_fmt_opts, "decryption_key", c->cenc_decryption_key, 0);\n')
+        text = replace(text, forward, forward +
+                       '    if (c->cenc_decryption_keys)\n'
+                       '        av_dict_set(&in_fmt_opts, "decryption_keys", c->cenc_decryption_keys, 0);\n')
+        option = ('    { "cenc_decryption_key", "Media decryption key (hex)", '
+                  'OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, '
+                  'INT_MIN, INT_MAX, .flags = FLAGS },\n')
+        text = replace(text, option, option +
+                       '    { "cenc_decryption_keys", "Supplied media keys by KID (hex)", '
+                       'OFFSET(cenc_decryption_keys), AV_OPT_TYPE_STRING, {.str = NULL}, '
+                       'INT_MIN, INT_MAX, .flags = FLAGS },\n')
+    else:
+        raise RuntimeError('Unexpected patch target')
+    return MARKER + text
+
+
+def apply(source):
+    """Validate all targets before writing, and verify repeated applications."""
+    changes = []
+    for name, checksum in ORIGINAL.items():
+        path = Path(source) / 'libavformat' / name
+        data = path.read_bytes()
+        text = data.decode('utf-8')
+        if text.startswith(MARKER):
+            stamp = path.with_name(name + '.ck-original')
+            original = stamp.read_bytes()
+            if hashlib.sha256(original).hexdigest() != checksum or data != transform(name, original.decode('utf-8')).encode('utf-8'):
+                raise RuntimeError('Previously patched FFmpeg source changed')
+            continue
+        if hashlib.sha256(data).hexdigest() != checksum:
+            raise RuntimeError('Expected exact official FFmpeg 6.1 source')
+        changes.append((path, data, transform(name, text).encode('utf-8')))
+    for path, original, modified in changes:
+        path.with_name(path.name + '.ck-original').write_bytes(original)
+        path.write_bytes(modified)
+
+
+if __name__ == '__main__':
+    import sys
+    apply(Path(sys.argv[1]))
+    print('PASS: bounded FFmpeg 6.1 supplied-key map modification applied')
