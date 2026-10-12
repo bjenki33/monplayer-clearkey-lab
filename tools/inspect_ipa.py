@@ -19,7 +19,7 @@ def inspect(path):
     commands, command_bytes = struct.unpack_from('<II', binary, 16)
     cursor = 32
     first_section = len(binary)
-    libraries, encryption, symtab = [], [], None
+    libraries, encryption, rpaths, symtab = [], [], [], None
     for _ in range(commands):
         cmd, size = struct.unpack_from('<II', binary, cursor)
         if size < 8 or cursor + size > len(binary):
@@ -29,6 +29,9 @@ def inspect(path):
             libraries.append(binary[cursor + offset:cursor + size].split(b'\0')[0].decode())
         if cmd == 0x2c:
             encryption.append(struct.unpack_from('<III', binary, cursor + 8)[2])
+        if cmd == 0x8000001c:
+            offset, = struct.unpack_from('<I', binary, cursor + 8)
+            rpaths.append(binary[cursor + offset:cursor + size].split(b'\0')[0].decode())
         if cmd == 0x19:
             sections, = struct.unpack_from('<I', binary, cursor + 64)
             for i in range(sections):
@@ -49,7 +52,7 @@ def inspect(path):
         'version': info.get('CFBundleShortVersionString'), 'minimumOS': info.get('MinimumOSVersion'),
         'binary_sha256': hashlib.sha256(binary).hexdigest(), 'crypt_ids': encryption,
         'header_slack': first_section - 32 - command_bytes,
-        'libraries': libraries, 'player_symbols': symbols[:75]
+        'libraries': libraries, 'rpaths': rpaths, 'player_symbols': symbols[:75]
     }, indent=2))
 
 

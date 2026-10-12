@@ -5,6 +5,7 @@
 #import <objc/message.h>
 
 static const void *CKTaskData = &CKTaskData;
+static const void *CKTaskRejected = &CKTaskRejected;
 static IMP CKOriginalTask, CKOriginalData, CKOriginalComplete;
 
 static Class CKRuntimeClass(void) { return NSClassFromString(@"CKRuntime"); }
@@ -31,16 +32,24 @@ static NSURLSessionDataTask *CKTask(id self, SEL cmd, NSURLRequest *request,
 static void CKDidReceive(id self, SEL cmd, NSURLSession *session, NSURLSessionDataTask *task, NSData *data) {
     @synchronized(task) {
         NSMutableData *buffer = objc_getAssociatedObject(task, CKTaskData);
-        if (!buffer && data.length && data.length <= 4*1024*1024) {
-            NSString *prefix = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, MIN(data.length, 128))]
-                                                   encoding:NSUTF8StringEncoding];
-            if ([[prefix stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] hasPrefix:@"#EXTM3U"]) {
-                buffer = [NSMutableData data];
-                objc_setAssociatedObject(task, CKTaskData, buffer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!buffer && data.length && !objc_getAssociatedObject(task, CKTaskRejected)) {
+            buffer = [NSMutableData data];
+            objc_setAssociatedObject(task, CKTaskData, buffer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (buffer) {
+            BOOL reject = buffer.length + data.length > 4*1024*1024;
+            if (!reject) {
+                [buffer appendData:data];
+                const unsigned char *bytes = buffer.bytes; NSUInteger offset = 0;
+                if (buffer.length >= 3 && !memcmp(bytes, "\xef\xbb\xbf", 3)) offset = 3;
+                while (offset < buffer.length && (bytes[offset] == ' ' || bytes[offset] == '\r' || bytes[offset] == '\n' || bytes[offset] == '\t')) offset++;
+                if (buffer.length >= offset + 7) reject = memcmp(bytes + offset, "#EXTM3U", 7) != 0;
+            }
+            if (reject) {
+                objc_setAssociatedObject(task, CKTaskData, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(task, CKTaskRejected, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }
-        if (buffer && buffer.length + data.length <= 4*1024*1024) [buffer appendData:data];
-        else if (buffer) objc_setAssociatedObject(task, CKTaskData, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     ((void (*)(id, SEL, id, id, id))CKOriginalData)(self, cmd, session, task, data);
 }
@@ -49,6 +58,7 @@ static void CKDidComplete(id self, SEL cmd, NSURLSession *session, NSURLSessionT
     @synchronized(task) {
         data = [objc_getAssociatedObject(task, CKTaskData) copy];
         objc_setAssociatedObject(task, CKTaskData, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(task, CKTaskRejected, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (!error) CKObserve(data, task.response.URL ?: task.currentRequest.URL);
     ((void (*)(id, SEL, id, id, id))CKOriginalComplete)(self, cmd, session, task, error);
@@ -79,21 +89,20 @@ static void CKExchange(Class target, SEL original, SEL replacement) {
     Method a = class_getInstanceMethod(target, original), b = class_getInstanceMethod(target, replacement);
     if (a && b) method_exchangeImplementations(a, b);
 }
-static IMP CKInstall(Class target, SEL selector, IMP replacement) {
+static void CKInstall(Class target, SEL selector, IMP replacement, IMP *saved) {
     Method method = class_getInstanceMethod(target, selector);
-    if (!method) return NULL;
-    IMP original = method_getImplementation(method);
+    if (!method) return;
+    *saved = method_getImplementation(method);
     class_replaceMethod(target, selector, replacement, method_getTypeEncoding(method));
-    return original;
 }
 __attribute__((constructor)) static void CKBootstrap(void) {
     @autoreleasepool {
-        CKOriginalTask = CKInstall([NSURLSession.sharedSession class], @selector(dataTaskWithRequest:completionHandler:), (IMP)CKTask);
+        CKInstall([NSURLSession.sharedSession class], @selector(dataTaskWithRequest:completionHandler:), (IMP)CKTask, &CKOriginalTask);
         Class delegate = NSClassFromString(@"Alamofire.SessionDelegate");
         if (!delegate) delegate = NSClassFromString(@"_TtC9Alamofire15SessionDelegate");
         if (delegate) {
-            CKOriginalData = CKInstall(delegate, @selector(URLSession:dataTask:didReceiveData:), (IMP)CKDidReceive);
-            CKOriginalComplete = CKInstall(delegate, @selector(URLSession:task:didCompleteWithError:), (IMP)CKDidComplete);
+            CKInstall(delegate, @selector(URLSession:dataTask:didReceiveData:), (IMP)CKDidReceive, &CKOriginalData);
+            CKInstall(delegate, @selector(URLSession:task:didCompleteWithError:), (IMP)CKDidComplete, &CKOriginalComplete);
         }
         CKExchange(AVPlayer.class, @selector(initWithPlayerItem:), @selector(ck_initWithPlayerItem:));
         CKExchange(AVPlayer.class, @selector(initWithURL:), @selector(ck_initWithURL:));

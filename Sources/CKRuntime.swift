@@ -179,6 +179,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         options.formatContextOptions["cenc_decryption_key"] = key
         options.formatContextOptions["decryption_key"] = key
         options.formatContextOptions["rw_timeout"] = 20_000_000
+        options.formatContextOptions["tls_verify"] = 1
         let player = KSPlayerLayer(url: channel.url, options: options, delegate: self)
         layer = player; player.translatesAutoresizingMaskIntoConstraints = false; view.insertSubview(player, at: 0)
         NSLayoutConstraint.activate([

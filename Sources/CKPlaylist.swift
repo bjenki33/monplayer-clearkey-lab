@@ -15,7 +15,7 @@ enum CKPlaylist {
     static func parse(_ data: Data, relativeTo base: URL?) -> [CKChannel] {
         guard data.count <= 4 * 1024 * 1024,
               let text = String(data: data, encoding: .utf8),
-              text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") else { return [] }
+              text.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{feff}"))).hasPrefix("#EXTM3U") else { return [] }
         var channels: [CKChannel] = []
         var title = "ClearKey", type = "", key = "", headers: [String: String] = [:]
         for raw in text.components(separatedBy: .newlines) {
@@ -130,5 +130,5 @@ final class CKRegistry {
         guard let entry = entries[url.absoluteString], entry.1.timeIntervalSinceNow > -3600 else { return nil }
         return entry.0
     }
-    func all() -> [CKChannel] { lock.lock(); defer { lock.unlock() }; return entries.values.map { $0.0 }.sorted { $0.title < $1.title } }
+    func all() -> [CKChannel] { lock.lock(); defer { lock.unlock() }; return entries.values.filter { $0.1.timeIntervalSinceNow > -3600 }.map { $0.0 }.sorted { $0.title < $1.title } }
 }

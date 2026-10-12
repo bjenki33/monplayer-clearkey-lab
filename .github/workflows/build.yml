@@ -37,8 +37,18 @@ jobs:
         run: |
           brew install xcodegen
           xcodegen generate
+      - uses: actions/cache/restore@v4
+        id: packages-cache
+        with:
+          path: build/packages
+          key: ks3558-ff61-macos15-packages-v1
       - name: Resolve pinned packages once
         run: xcodebuild -resolvePackageDependencies -project CKBridge.xcodeproj -scheme CKBridge -clonedSourcePackagesDirPath build/packages
+      - uses: actions/cache/save@v4
+        if: steps.packages-cache.outputs.cache-hit != 'true'
+        with:
+          path: build/packages
+          key: ks3558-ff61-macos15-packages-v1
       - uses: actions/cache@v4
         with:
           path: build/ffmpeg-lgpl/output

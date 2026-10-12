@@ -1,6 +1,7 @@
 """Rebuild only LGPL FFmpeg core; replace the package's GPL/nonfree binaries."""
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -63,7 +64,7 @@ def main():
                     '--disable-muxers', '--enable-muxer=mov,mp4,mpegts,matroska']
             run(*args, cwd=build, env=env)
             config = (build / 'ffbuild/config.mak').read_text()
-            if 'CONFIG_GPL=yes' in config or 'CONFIG_NONFREE=yes' in config:
+            if re.search(r'(?m)^CONFIG_(GPL|NONFREE|VERSION3)=yes$', config):
                 raise RuntimeError('Unapproved FFmpeg license configuration')
             run('make', '-j', str(max(2, os.cpu_count() or 2)), cwd=build, env=env)
             run('make', 'install', cwd=build, env=env)
