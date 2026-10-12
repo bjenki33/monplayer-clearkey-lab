@@ -93,7 +93,11 @@ final class CKPlaylistController: UITableViewController {
         }
         input.resignFirstResponder(); task?.cancel(); status.text = "Loading playlist..."
         var request = URLRequest(url: url); request.timeoutInterval = 30
-        task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil; config.httpCookieStorage = nil
+        let session = URLSession(configuration: config)
+        task = session.dataTask(with: request) { [weak self] data, response, error in
+            session.finishTasksAndInvalidate()
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard error == nil, let data, let response = response as? HTTPURLResponse,
