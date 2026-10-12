@@ -38,7 +38,7 @@ jobs:
             -t 28800 -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart Sources/Assets/CKPlaceholder.mp4
       - name: Generate framework and test host
         run: |
-          brew install xcodegen
+          brew install xcodegen nasm
           xcodegen generate
       - uses: actions/cache/restore@v4
         id: packages-cache
