@@ -41,8 +41,11 @@ enum CKDiagnostic {
             }
         }
         if case CKFailure.multipleKeys = error { return "Provider key: one-key-only operation received multiple distinct keys." }
-        if case CKFailure.unsupportedMultiKeyManifest = error { return "Manifest: CK3 multikey playback currently requires DASH/CENC. HLS multikey is not implemented." }
+        if case CKFailure.unsupportedMultiKeyManifest = error { return "Manifest: multikey playback currently requires DASH/CENC. HLS multikey is not implemented." }
         if case CKFailure.invalidKey = error { return "Provider key: unsupported key map/JWKS response." }
+        if case CKFailure.invalidMetadata = error { return "Playlist metadata: invalid/conflicting DRM declaration or unsafe header." }
+        if case CKFailure.unsupportedMetadata = error { return "Playlist metadata: declared header/parameter scope is not implemented. It was not silently ignored." }
+        if case CKFailure.unsupportedLicense = error { return "Provider key: declared license request/manifest-key discovery is not implemented. No guessed GET, body or key was used." }
         let code = (error as NSError).code
         if (error as NSError).domain == NSURLErrorDomain {
             switch code {
@@ -63,5 +66,5 @@ enum CKDiagnostic {
         }
         return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
-    static func trace(_ message: String) { NSLog("[CKBridge CK3] %@", message) }
+    static func trace(_ message: String) { NSLog("[CKBridge CK4] %@", message) }
 }

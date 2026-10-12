@@ -211,6 +211,145 @@ final class CKTests: XCTestCase {
         XCTAssertFalse(try multiFixtureMatches(url.path, protocols: "file,crypto,data", keys: [kid: secondKey, secondKid: key]))
     }
 
+    func testModernKodiInlineKeysReachTheSameMultikeyEngine() throws {
+        let json = "{\"org.w3.clearkey\":{\"license\":{\"keyids\":{\"\(kid)\":\"\(key)\",\"\(secondKid)\":\"\(secondKey)\"}}}}"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(json)"), relativeTo: nil).first)
+        XCTAssertNil(channel.metadataFailure)
+        XCTAssertNil(try channel.keyRequest())
+        let map = try CKKeys.parse(Data(channel.keySource.utf8))
+        XCTAssertEqual(map, [kid: key, secondKid: secondKey])
+        let url = try XCTUnwrap(Bundle(for: CKTests.self).url(forResource: "manifest", withExtension: "mpd", subdirectory: "Fixtures/multikey"))
+        XCTAssertTrue(try multiFixtureMatches(url.path, protocols: "file,crypto,data", keys: map))
+    }
+
+    func testKodiLegacyAndLicenseHeadersAreSeparated() throws {
+        let tags = "#KODIPROP:inputstream.adaptive.drm_legacy=org.w3.clearkey|https://example.invalid/license|Authorization=Bearer+license&X-License=only\n#EXTHTTP:{\"Authorization\":\"Bearer stream\",\"Origin\":\"https://example.invalid\"}"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist(tags), relativeTo: nil).first)
+        let request = try XCTUnwrap(channel.keyRequest())
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer license")
+        XCTAssertEqual(channel.headers["Authorization"], "Bearer stream")
+        XCTAssertNil(channel.headers["X-License"])
+        XCTAssertEqual(channel.licenseHeaders["X-License"], "only")
+    }
+
+    func testOldLicensePipeHeadersAndRawFlagRemainGETCompatible() throws {
+        let tags = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=https://example.invalid/keys|User-Agent=License%2BClient||R\n#EXTVLCOPT:http-user-agent=StreamClient"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist(tags), relativeTo: nil).first)
+        XCTAssertEqual(channel.keySource, "https://example.invalid/keys")
+        XCTAssertEqual(try channel.keyRequest()?.value(forHTTPHeaderField: "User-Agent"), "License+Client")
+        XCTAssertEqual(channel.headers["User-Agent"], "StreamClient")
+    }
+
+    func testDataURIAndBareBase64KeyPayloads() throws {
+        let jwks = #"{"keys":[{"kty":"oct","kid":"AAECAwQFBgcICQoLDA0ODw","k":"EBESExQVFhcYGRobHB0eHw"}]}"#
+        let encoded = Data(jwks.utf8).base64EncodedString()
+        for value in [encoded, "data:application/json;base64," + encoded] {
+            XCTAssertEqual(try CKKeys.parse(Data(value.utf8)), [kid: key])
+        }
+        let withBOM = (Data([239, 187, 191]) + Data(jwks.utf8)).base64EncodedString()
+        XCTAssertEqual(try CKKeys.parse(Data(withBOM.utf8)), [kid: key])
+        let modern = "{\"org.w3.clearkey\":{\"license\":{\"server_url\":\"data:application/json;base64,\(encoded)\"}}}"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first)
+        XCTAssertNil(channel.metadataFailure)
+        XCTAssertEqual(try CKKeys.parse(Data(channel.keySource.utf8)), [kid: key])
+        XCTAssertThrowsError(try CKKeys.parse(Data("data:text/html;base64,".utf8)))
+        XCTAssertThrowsError(try CKKeys.parse(Data("data:application/json;base64,%%%".utf8)))
+    }
+
+    func testModernRemoteLicenseDoesNotGuessGETBeforeChallengeSupport() throws {
+        let modern = #"{"org.w3.clearkey":{"license":{"server_url":"https://example.invalid/standard-license"}}}"#
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first)
+        XCTAssertEqual(channel.metadataFailure, .unsupportedLicense)
+        XCTAssertThrowsError(try channel.keyRequest())
+        XCTAssertTrue(CKDiagnostic.message(CKFailure.unsupportedLicense, stage: .key).contains("No guessed GET"))
+    }
+
+    func testLicenseBodyAndWrapperAreNotSilentlyIgnored() throws {
+        let tags = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=https://example.invalid/keys|Content-Type=application%2Fjson|R{SSM}|R"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist(tags), relativeTo: nil).first)
+        XCTAssertEqual(channel.metadataFailure, .unsupportedLicense)
+        XCTAssertThrowsError(try channel.keyRequest())
+        let modern = "{\"org.w3.clearkey\":{\"license\":{\"keyids\":{\"\(kid)\":\"\(key)\"},\"req_data\":\"BODY\"}}}"
+        XCTAssertEqual(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first?.metadataFailure, .unsupportedLicense)
+    }
+
+    func testRepeatedAndEscapedJSONKeysAreRejected() throws {
+        let duplicate = "{\"\(kid)\":\"\(key)\",\"\(kid)\":\"\(secondKey)\"}"
+        XCTAssertThrowsError(try CKKeys.parse(Data(duplicate.utf8)))
+        XCTAssertThrowsError(try CKJSON.object(Data(#"{"license":{},"\u006cicense":{}}"#.utf8)))
+        XCTAssertThrowsError(try CKJSON.object(Data(#"{"keys":[{"kid":"one","kid":"two"}]}"#.utf8)))
+        XCTAssertNoThrow(try CKJSON.object(Data(#"{"quoted":"\"kid\":", "nested":[true,false,null,3.2,{}]}"#.utf8)))
+        let deep = String(repeating: "[", count: 34) + "0" + String(repeating: "]", count: 34)
+        XCTAssertThrowsError(try CKJSON.object(Data(deep.utf8)))
+    }
+
+    func testConflictingClearDeclarationsFailInsteadOfChoosingOne() throws {
+        let tags = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)\n#KODIPROP:inputstream.adaptive.drm_legacy=org.w3.clearkey|\(kid):\(secondKey)"
+        let channel = try XCTUnwrap(CKPlaylist.parse(playlist(tags), relativeTo: nil).first)
+        XCTAssertEqual(channel.metadataFailure, .invalidMetadata)
+        XCTAssertThrowsError(try channel.keyRequest())
+        let equivalent = tags.replacingOccurrences(of: "|\(kid):\(secondKey)", with: "|\(kid):\(key)")
+        XCTAssertNil(CKPlaylist.parse(playlist(equivalent), relativeTo: nil).first?.metadataFailure)
+    }
+
+    func testModernWidevineIsNotMisclassifiedAsClearKey() throws {
+        let wide = #"{"com.widevine.alpha":{"license":{"server_url":"https://example.invalid/org.w3.clearkey"}}}"#
+        XCTAssertTrue(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(wide)"), relativeTo: nil).isEmpty)
+        XCTAssertTrue(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm_legacy=com.microsoft.playready|https://example.invalid/keys"), relativeTo: nil).isEmpty)
+    }
+
+    func testHeaderCaseOverridesEncodingAndInjectionRejection() throws {
+        var headers: [String: String] = [:]
+        try CKHeaders.merge("Authorization=Bearer+one&authorization=Bearer%20two&X-Plus=a%2Bb", into: &headers)
+        XCTAssertEqual(headers["Authorization"], "Bearer two")
+        XCTAssertEqual(headers.count, 2)
+        XCTAssertEqual(headers["X-Plus"], "a+b")
+        for text in ["Bad%3AName=value", "X-Test=bad%0D%0AInjected", "X-Test=%00", "X-Test=%GG"] {
+            XCTAssertThrowsError(try CKHeaders.merge(text, into: &headers))
+        }
+        let unsafe = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)\n#KODIPROP:inputstream.adaptive.stream_headers=X-Test=bad%0D%0AInjected"
+        XCTAssertEqual(CKPlaylist.parse(playlist(unsafe), relativeTo: nil).first?.metadataFailure, .invalidMetadata)
+    }
+
+    func testRegistryDropsStaleKeyWhenURLBecomesUnprotected() {
+        let url = URL(string: "https://example.invalid/stale-ck4.mpd")!
+        let owner = URL(string: "https://example.invalid/refresh-list.m3u")!
+        CKRegistry.shared.observe(playlist("#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)", url.absoluteString), source: owner)
+        XCTAssertNotNil(CKRegistry.shared.channel(url))
+        CKRegistry.shared.observe(playlist("", url.absoluteString), source: owner)
+        XCTAssertNil(CKRegistry.shared.channel(url))
+    }
+
+    func testHLSResponseDoesNotEraseChannelMetadata() {
+        let url = URL(string: "https://example.invalid/hls-preserved-ck4.mpd")!
+        CKRegistry.shared.observe(playlist("#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)", url.absoluteString), source: nil)
+        let hls = Data("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=90000\n\(url.absoluteString)\n".utf8)
+        XCTAssertNil(CKPlaylist.report(hls, relativeTo: nil))
+        CKRegistry.shared.observe(hls, source: nil)
+        XCTAssertNotNil(CKRegistry.shared.channel(url))
+    }
+
+    func testNoMetadataCarryOverAndMalformedMetadataIsVisible() throws {
+        let first = String(data: playlist("#KODIPROP:inputstream.adaptive.drm_legacy=org.w3.clearkey|\(kid):\(key)|X-License=only"), encoding: .utf8)!
+        let second = "#EXTINF:-1,Second\n#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)\nhttps://example.invalid/second-isolated.mpd\n"
+        let report = try XCTUnwrap(CKPlaylist.report(Data((first + second).utf8), relativeTo: nil))
+        XCTAssertEqual(report.channels.count, 2)
+        XCTAssertNil(report.channels[1].licenseHeaders["X-License"])
+        let invalid = try XCTUnwrap(CKPlaylist.report(playlist("#KODIPROP:inputstream.adaptive.drm={invalid}"), relativeTo: nil))
+        XCTAssertEqual(invalid.metadataIssues, 1)
+        XCTAssertTrue(invalid.channels.isEmpty)
+    }
+
+    func testUnimplementedHeaderScopeAndInvalidPriorityAreExplicit() throws {
+        let tags = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=\(kid):\(key)\n#KODIPROP:inputstream.adaptive.manifest_headers=Authorization=manifest-only"
+        XCTAssertEqual(CKPlaylist.parse(playlist(tags), relativeTo: nil).first?.metadataFailure, .unsupportedMetadata)
+        for priority in ["true", "0", "1.5"] {
+            let modern = "{\"org.w3.clearkey\":{\"priority\":\(priority),\"license\":{\"keyids\":{\"\(kid)\":\"\(key)\"}}}}"
+            XCTAssertEqual(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first?.metadataFailure, .invalidMetadata)
+        }
+    }
+
     private func multiFixtureMatches(_ path: String, protocols: String, keys: [String: String]) throws -> Bool {
         let goldenURL = try XCTUnwrap(Bundle(for: CKTests.self).url(forResource: "audio-reference", withExtension: "f32", subdirectory: "Fixtures/multikey"))
         let bytes = [UInt8](try Data(contentsOf: goldenURL))

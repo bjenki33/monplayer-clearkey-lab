@@ -20,6 +20,9 @@ are stored in this repository or supplied to CI.
   explicitly rather than silently dropping the key map.
 - No Widevine/PlayReady, CDM key extraction or license-policy bypass.
 - No claim of restored MonPlayer source or tested physical-device playback.
+- CK4 adds the supported subset of Kodi modern inline ClearKey JSON,drm_legacy,
+  data:application/json;base64 and bare base64 JSON/JWKS. Original legacy
+  ClearKey URL/GET playlists keep their existing request path.
 
 ## CK2 Changes
 
@@ -69,3 +72,19 @@ IPA and record all changed ZIP entries and hashes.
   actual core-build and key-map modification source to reject stale binaries.
 - Real keys/URLs never enter CI. CK2's signed installation and user-reported
   SCTV1/ON playback are baseline evidence,not CK3 physical verification.
+
+## CK4 Stage 1B Checkpoint
+
+- Parse modern `inputstream.adaptive.drm` inline `license.keyids` or JSON data
+  URIs,and `inputstream.adaptive.drm_legacy` inline/data/legacy-GET sources.
+- Keep license-only headers separate from stream headers;percent-encoded
+  headers handle form spaces/literal plus and case-insensitive overrides.
+- Reject ambiguous/conflicting declarations,duplicate/escaped JSON keys,
+  unsafe headers and declared-but-unimplemented license/header scopes.
+- Modern remote license challenge flows,POST/custom bodies,wrappers and
+  manifest-embedded key discovery are still Stage1C work. No guessed GET is
+  substituted for a modern standard-license declaration.
+- Refresh observed metadata so an old ClearKey key is not reused after the
+  source becomes unprotected/another DRM;HLS manifests are not channel lists.
+- Owned parser-to-two-key decode and negative/isolation regressions extend
+  the existing native tests. Real user secrets never enter public tests/CI.
