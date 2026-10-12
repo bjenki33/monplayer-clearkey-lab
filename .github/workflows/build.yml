@@ -52,7 +52,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/ffmpeg-lgpl/output
-          key: ffmpeg61-lgpl-ios155-xcode26-v1
+          key: ffmpeg61-lgpl-ios155-xcode26-v2
       - name: Rebuild LGPL-only playback core
         run: |
           set -o pipefail
