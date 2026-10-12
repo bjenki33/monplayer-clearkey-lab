@@ -34,12 +34,16 @@ targets:
     type: application
     platform: iOS
     sources: [Host]
+    info:
+      path: build/CKHost-Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true # CI host only, for owned loopback HTTP fixtures.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.bocphot.CKHost
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
     dependencies:
       - target: CKBridge
         embed: true

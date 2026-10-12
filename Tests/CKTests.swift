@@ -79,8 +79,15 @@ final class CKTests: XCTestCase {
     func testDecodeGzipCENCManifestOverHTTP() throws {
         try decodeFixture("http://127.0.0.1:18761/gzip/manifest.mpd", protocols: "http,tcp,crypto,data")
     }
-    func testDecodeRedirectedGzipCENCManifestOverHTTP() throws {
-        try decodeFixture("http://127.0.0.1:18761/redirect.php", protocols: "http,tcp,crypto,data")
+    func testDecodeRedirectedGzipCENCManifestOverHTTP() async throws {
+        let initial = URL(string: "http://127.0.0.1:18761/redirect.php")!
+        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(from: initial)
+        let resolved = try CKManifest.validatedURL(data, response: XCTUnwrap(response as? HTTPURLResponse))
+        XCTAssertEqual(resolved.path, "/gzip/manifest.mpd")
+        try decodeFixture(resolved.absoluteString, protocols: "http,tcp,crypto,data")
     }
     func testManifestValidationAndSafeDiagnostics() throws {
         let url = URL(string: "https://example.invalid/final/live.mpd")!

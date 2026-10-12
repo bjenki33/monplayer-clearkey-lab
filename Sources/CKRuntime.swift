@@ -96,6 +96,7 @@ final class CKPlaylistController: UITableViewController {
         var request = URLRequest(url: url); request.timeoutInterval = 30
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil; config.httpCookieStorage = nil
+        config.timeoutIntervalForResource = 30
         let session = URLSession(configuration: config)
         task = session.dataTask(with: request) { [weak self] data, response, error in
             session.finishTasksAndInvalidate()
@@ -172,6 +173,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let config = URLSessionConfiguration.ephemeral; config.httpCookieStorage = nil
+        config.timeoutIntervalForResource = 25
         let session = URLSession(configuration: config)
         keyTask = session.dataTask(with: request) { [weak self] data, response, error in
             session.finishTasksAndInvalidate()
@@ -193,6 +195,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let config = URLSessionConfiguration.ephemeral; config.urlCache = nil; config.httpCookieStorage = nil
+        config.timeoutIntervalForResource = 20
         let session = URLSession(configuration: config)
         manifestTask = session.dataTask(with: request) { [weak self] data, response, error in
             session.finishTasksAndInvalidate()

@@ -20,7 +20,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         else:
-            relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else path.lstrip('/')
+            # Incorrect redirect-base resolution must fail, not hit a root alias.
+            relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else '_missing_'
             target = (ROOT / relative).resolve()
             if ROOT not in target.parents or not target.is_file():
                 body, code, kind, encoding = b'missing fixture', 404, 'text/plain', None
