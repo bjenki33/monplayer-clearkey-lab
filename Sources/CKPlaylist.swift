@@ -123,7 +123,7 @@ final class CKRegistry {
         lock.lock(); defer { lock.unlock() }
         entries = entries.filter { $0.value.1.timeIntervalSinceNow > -3600 }
         for channel in channels.prefix(2000) { entries[channel.url.absoluteString] = (channel, Date()) }
-        if entries.count > 2000 { entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.1 > $1.value.1 }.prefix(2000)) }
+        if entries.count > 2000 { entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.1 > $1.value.1 }.prefix(2000).map { ($0.key, $0.value) }) }
     }
     func channel(_ url: URL) -> CKChannel? {
         lock.lock(); defer { lock.unlock() }

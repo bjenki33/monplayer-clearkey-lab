@@ -53,6 +53,8 @@ final class CKTests: XCTestCase {
         XCTAssertFalse(CKRuntime.route(item))
     }
     func testFFmpegDASHCencOptionActuallyExists() {
+        XCTAssertTrue(String(cString: avformat_license()).hasPrefix("LGPL"))
+        XCTAssertTrue(String(cString: avcodec_license()).hasPrefix("LGPL"))
         guard let format = av_find_input_format("dash") else { return XCTFail("DASH is missing from the compiled playback engine") }
         var obj: UnsafeMutableRawPointer? = UnsafeMutableRawPointer(mutating: format.pointee.priv_class)
         let option = av_opt_find(&obj, "cenc_decryption_key", nil, 0, AV_OPT_SEARCH_FAKE_OBJ)

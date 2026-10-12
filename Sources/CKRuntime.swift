@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import KSPlayer
+import Libavutil
 import UIKit
 
 @objc(CKRuntime) public final class CKRuntime: NSObject {
@@ -170,6 +171,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func start(_ key: String) throws {
         guard !finished else { return }
         KSOptions.logLevel = .panic
+        av_log_set_level(AV_LOG_QUIET)
         KSOptions.firstPlayerType = KSMEPlayer.self; KSOptions.secondPlayerType = nil
         let options = KSOptions(); options.isAutoPlay = false; options.hardwareDecode = true
         options.preferredForwardBufferDuration = 3; options.maxBufferDuration = 12

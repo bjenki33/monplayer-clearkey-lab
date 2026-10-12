@@ -22,7 +22,10 @@ are stored in this repository or supplied to CI.
 
 KSPlayer is pinned to commit3558c7645240a191c3e4672eabe7b6ae1ee4f4ae,
 whose LICENSE is LGPL2.1, not its current GPL/binary-only revision.
-FFmpegKit is pinned to6.1.0. The bridge is a replaceable dynamic framework;
+FFmpegKit is pinned to6.1.0. Its prebuilt GPL/nonfree core is NEVER shipped:
+CI rebuilds official FFmpeg6.1 with GPL/nonfree/version3 disabled,then
+replaces device/simulator core libraries. Native tests assert LGPL at runtime.
+The bridge is a replaceable dynamic framework;
 buildable bridge source and exact upstream references are provided.
 Rebuild via the included macOS workflow and XcodeGen project. Do not assume
 third-party binary licensing from a package's name; inspect bundled notices
