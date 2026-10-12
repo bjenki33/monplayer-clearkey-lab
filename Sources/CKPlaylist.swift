@@ -16,7 +16,7 @@ struct CKChannel {
         if let metadataFailure { throw metadataFailure }
         guard let url = URL(string: keySource), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-        let headers = try CKHeaders.combining(headers, licenseHeaders)
+        let headers = try CKHeaders.combining(self.headers, licenseHeaders)
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         return request
     }
