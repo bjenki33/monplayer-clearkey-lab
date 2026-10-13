@@ -40,16 +40,88 @@ final class CKHTTPRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked S
     }
 }
 
+enum CKHTTPRetry {
+    static let maxAttempts = 3
+    static func delay(request: URLRequest, role: CKHTTPRole, error: Error,
+                      response: HTTPURLResponse?, failedAttempt: Int, remaining: TimeInterval,
+                      now: Date = Date()) -> TimeInterval? {
+        guard role == .manifest, request.httpMethod == "GET", request.httpBody == nil,
+              request.httpBodyStream == nil, request.value(forHTTPHeaderField: "Range") == nil,
+              (1..<maxAttempts).contains(failedAttempt) else { return nil }
+        if let failure = error as? CKOpenFailure, case .http(let status) = failure {
+            guard [408,429,502,503,504].contains(status) else { return nil }
+        } else {
+            let failure = error as NSError
+            guard failure.domain == NSURLErrorDomain,
+                  [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorCannotConnectToHost].contains(failure.code) else { return nil }
+        }
+        var delay: TimeInterval = failedAttempt == 1 ? 0.25 : 0.75
+        if let value = response?.value(forHTTPHeaderField: "Retry-After") {
+            // Never shorten a server's requested wait or guess a malformed value.
+            guard let requested = retryAfter(value, now: now), requested <= 2 else { return nil }
+            delay = max(delay, requested)
+        }
+        guard delay + 0.1 < remaining else { return nil }
+        return delay
+    }
+    static func retryAfter(_ value: String, now: Date) -> TimeInterval? {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.count <= 128 else { return nil }
+        if value.utf8.allSatisfy({ (48...57).contains($0) }) {
+            guard let seconds = TimeInterval(value), seconds.isFinite else { return nil }
+            return seconds
+        }
+        for format in ["EEE, dd MMM yyyy HH:mm:ss 'GMT'", "EEEE, dd-MMM-yy HH:mm:ss 'GMT'", "EEE MMM d HH:mm:ss yyyy"] {
+            let parser = DateFormatter()
+            parser.locale = Locale(identifier: "en_US_POSIX"); parser.timeZone = TimeZone(secondsFromGMT: 0)
+            parser.dateFormat = format; parser.isLenient = false
+            if let date = parser.date(from: value) { return max(0, date.timeIntervalSince(now)) }
+        }
+        return nil
+    }
+}
+
 enum CKHTTP {
+    private struct AttemptFailure: Error { let underlying: Error; let response: HTTPURLResponse }
     static func read(_ request: URLRequest, role: CKHTTPRole, limit: Int) async throws -> (Data, HTTPURLResponse) {
         try Task.checkCancellation()
-        guard let url = request.url, url.host != nil,
+        guard limit > 0, let url = request.url, url.host != nil,
               ["http","https"].contains(url.scheme?.lowercased() ?? "") else { throw CKFailure.invalidMetadata }
+        let budget = min(role == .license ? 25.0 : 20.0,
+                         request.timeoutInterval > 0 && request.timeoutInterval.isFinite ? request.timeoutInterval : 20)
+        let deadline = ProcessInfo.processInfo.systemUptime + budget
+        var attempt = 1
+        while true {
+            try Task.checkCancellation()
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { throw URLError(.timedOut) }
+            do {
+                let result = try await once(request, role: role, limit: limit, timeout: remaining)
+                try Task.checkCancellation()
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw URLError(.timedOut) }
+                return result
+            }
+            catch {
+                try Task.checkCancellation()
+                let failure = error as? AttemptFailure
+                let underlying = failure?.underlying ?? error
+                guard let delay = CKHTTPRetry.delay(request: request, role: role, error: underlying,
+                                                   response: failure?.response, failedAttempt: attempt,
+                                                   remaining: deadline - ProcessInfo.processInfo.systemUptime) else { throw underlying }
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                attempt += 1
+            }
+        }
+    }
+    private static func once(_ request: URLRequest, role: CKHTTPRole, limit: Int,
+                             timeout: TimeInterval) async throws -> (Data, HTTPURLResponse) {
+        var request = request
+        request.timeoutInterval = timeout
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.urlCredentialStorage = nil; configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false; configuration.httpCookieAcceptPolicy = .never
-        configuration.timeoutIntervalForRequest = role == .license ? 25 : 20
-        configuration.timeoutIntervalForResource = configuration.timeoutIntervalForRequest
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
         let policy = CKHTTPRedirectPolicy(request: request, role: role)
         let session = URLSession(configuration: configuration, delegate: policy, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
@@ -57,7 +129,9 @@ enum CKHTTP {
             let (bytes, response) = try await session.bytes(for: request)
             guard !policy.wasDenied else { throw CKFailure.unsafeRedirect }
             guard let response = response as? HTTPURLResponse else { throw CKFailure.network }
-            guard (200..<300).contains(response.statusCode) else { throw CKOpenFailure.http(response.statusCode) }
+            guard (200..<300).contains(response.statusCode) else {
+                throw AttemptFailure(underlying: CKOpenFailure.http(response.statusCode), response: response)
+            }
             guard response.expectedContentLength <= Int64(limit) else { throw CKFailure.responseTooLarge }
             var data = Data()
             data.reserveCapacity(min(limit, max(0, Int(response.expectedContentLength))))

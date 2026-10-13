@@ -189,3 +189,24 @@ IPA and record all changed ZIP entries and hashes.
 - Owned64-byte URL revealed an upstream6.1 DASH scratch-buffer alignment bug:
   reserve the terminating NUL before64-byte alignment. Synthetic boundary
   decodes cover63/64/65/127/128/129 bytes without shortening the failing URL.
+
+## CK10 Stage2A Manifest Preflight Recovery
+
+- Only full manifest GET preflight requests can retry transient408/429/502/503/
+  504 or connection-lost/connect/timeout failures:at most3attempts in ONE20s
+  monotonic budget(or a caller's shorter timeout). Backoff0.25/0.75s;
+  Retry-After seconds/HTTP dates are honored up to2s,long/invalid waits fail
+  rather than retry early. License GET/POST,manifest POST/Range,auth,TLS,
+  policy,size and parsing failures are never automatically retried.
+- Each attempt uses a new ephemeral session,empty response buffer,no persistent
+  cookies/credential cache and the SAME declared request. Async cancellation
+  interrupts both active read and backoff;closed generations stay invalidated.
+- Owned tests check exact request counts,partial-body discard,deadline/auth/
+  license exclusions,concurrent header isolation and an actual moving encrypted
+  video/stereo engine after two preflight503failures. No real-provider data.
+- Scope is URLSession preflight,NOT FFmpeg segment reconnect,CDN credential
+  isolation,cookie/token renewal,new fallback,FairPlay or universal DRM.
+  PinnedFFmpeg6.1 forwards custom headers to its own HTTP paths;end-to-end
+  origin policy needs a separate checked implementation,not this retry claim.
+- HTTP reference:[RFC9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2).
+  All remaining roadmap items and physical acceptance are tracked separately.

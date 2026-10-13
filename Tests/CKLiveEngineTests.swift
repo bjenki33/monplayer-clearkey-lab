@@ -13,6 +13,16 @@ final class CKLiveEngineTests: XCTestCase {
         try await exerciseLivePlayer(session: "engineprogress")
     }
 
+    @MainActor
+    func testActualRecoveredManifestStartsMovingVideoAndStereoEngine() async throws {
+        try await exerciseLivePlayer(session: "transportengine")
+        let url = URL(string: "http://127.0.0.1:18761/transport/transportengine/stats")!
+        let (data, _) = try await CKHTTP.read(URLRequest(url: url), role: .license, limit: 4096)
+        let stats = try XCTUnwrap(try CKJSON.object(data) as? [String:Int])
+        XCTAssertEqual(stats["failures"], 2)
+        XCTAssertGreaterThanOrEqual(stats["attempts"] ?? 0, 3)
+    }
+
     final class InflatedProbeOptions: CKLiveOptions {
         override func process(assetTrack: some MediaPlayerTrack) {
             if assetTrack.mediaType == .video { assetTrack.nominalFrameRate = 600 }

@@ -4,6 +4,7 @@ import copy
 import json
 import base64
 import re
+import socket
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +27,7 @@ ET.register_namespace('', NS)
 ET.register_namespace('cenc', 'urn:mpeg:cenc:2013')
 SESSIONS = {}
 SESSION_LOCK = threading.Lock()
+TRANSPORT = {}
 SEQUENCE_BASE = 895000000
 
 
@@ -117,6 +119,61 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def transport(self, session, mode, post=False):
+        if mode == 'stats':
+            with SESSION_LOCK:
+                result = copy.deepcopy(TRANSPORT.get(session, {}))
+            body, code, extra = json.dumps(result).encode(), 200, {}
+        else:
+            if post:
+                self.rfile.read(min(128 * 1024, int(self.headers.get('Content-Length', '0'))))
+            with SESSION_LOCK:
+                state = TRANSPORT.setdefault(session, {'attempts': 0, 'times': [], 'cookies': 0,
+                                                       'wrong_headers': 0, 'methods': []})
+                state['attempts'] += 1
+                attempt = state['attempts']
+                state['times'].append(time.monotonic())
+                state['methods'].append('POST' if post else 'GET')
+                state['cookies'] += int(self.headers.get('Cookie') is not None)
+                state['wrong_headers'] += int(self.headers.get('X-Stream') != 'owned-stream' or
+                                              self.headers.get('X-License') is not None)
+                if session in ['alpha', 'beta']:
+                    state['wrong_headers'] += int(self.headers.get('X-Owned') != session)
+            body, code, extra = b'<MPD/>', 200, {}
+            if mode in ['recover', 'always', 'rate', 'longwait', 'invalidwait', 'deadline', 'cancelwait']:
+                if mode == 'always' or attempt <= (2 if mode == 'recover' else 1):
+                    body, code = b'temporary owned outage', 503
+                    wait = {'rate': '1', 'longwait': '120', 'invalidwait': 'not-a-time',
+                            'deadline': '1', 'cancelwait': '2'}.get(mode)
+                    if wait:
+                        extra['Retry-After'] = wait
+            elif mode in ['401', '403', '404', '500']:
+                body, code = b'owned denied', int(mode)
+            elif mode == 'drop' and attempt == 1:
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR); self.connection.close()
+                return
+            elif mode == 'partial' and attempt == 1:
+                body, extra['partial'] = b'bad-prefix', '1'
+            elif mode == 'slow':
+                time.sleep(6)
+            elif mode == 'oversize':
+                body = b'x' * 2049
+            elif mode == 'invalidmanifest':
+                body = b'<html>not media</html>'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/dash+xml')
+        self.send_header('Set-Cookie', 'owned-transport=never-retain; Path=/')
+        self.send_header('Content-Length', str(len(body) + (5 if extra.pop('partial', None) else 0)))
+        self.send_header('Connection', 'close'); self.close_connection = True
+        for name, value in extra.items():
+            self.send_header(name, value)
+        self.end_headers()
+        try:
+            self.wfile.write(body); self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def renewal(self, session):
         raw = self.rfile.read(min(128 * 1024 + 1, int(self.headers.get('Content-Length', '0'))))
         with SESSION_LOCK:
@@ -222,7 +279,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path.startswith('/renew/'):
+        if path.startswith('/transport/'):
+            self.transport(*path.split('/')[2:4], post=True)
+        elif path.startswith('/renew/'):
             self.renewal(path.split('/')[-1])
         elif path.startswith('/rotate/') and path.endswith('/advance'):
             session = path.split('/')[2]
@@ -239,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path.startswith('/transport/'):
+            self.transport(*path.split('/')[2:4]); return
         if path.startswith('/license/'):
             self.license(path.split('/')[-1], False)
             return
@@ -260,6 +321,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         elif path.startswith('/live/') and path.endswith('/manifest.mpd'):
             session = path.split('/')[2]
+            if session == 'transportengine':
+                with SESSION_LOCK:
+                    state = TRANSPORT.setdefault(session, {'attempts': 0, 'failures': 0})
+                    state['attempts'] += 1
+                    failed = state['attempts'] <= 2
+                    if failed:
+                        state['failures'] += 1
+                if failed:
+                    self.send_error(503); return
             if session.startswith(('licensed', 'rotation')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                 self.send_error(403); return
             if not session.isalnum() or len(session) > 64:
