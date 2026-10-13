@@ -99,6 +99,8 @@ class BackportTests(unittest.TestCase):
         self.assertIn('av_gettime_relative() >= pls->ck_open_deadline', dash)
         self.assertIn('ret = ck_open_fragment(c, pls, url, &opts);', dash)
         self.assertIn('goto end; /* Bounded route fails rather than skipping forever. */', dash)
+        self.assertIn('return v->ck_fragment_error;', dash)
+        self.assertIn('pls->ck_fragment_error = ret;', dash)
 
     def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())

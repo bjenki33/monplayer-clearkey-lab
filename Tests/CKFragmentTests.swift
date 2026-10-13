@@ -35,7 +35,9 @@ final class CKFragmentTests: XCTestCase {
     func testActualDefaultOffDoesNotRetryFragmentConnectionFailure() async throws {
         XCTAssertLessThan(open("segmentinitdefault", enabled: false), 0)
         let stats = try await CKFragmentFixtures.stats("segmentinitdefault")
-        XCTAssertEqual(stats["fault_attempts"], 1)
+        // Unmodified MOV probing can call its init reader twice. Default-off
+        // preserves that upstream behavior,not integration-level retries.
+        XCTAssertEqual(stats["fault_attempts"], 2)
     }
     func testActualFragmentTransportExhaustionIsBoundedAndFails() async throws {
         let began = ProcessInfo.processInfo.systemUptime
@@ -70,6 +72,7 @@ final class CKFragmentTests: XCTestCase {
         XCTAssertEqual(CKLiveOptions().formatContextOptions["ck_fragment_retry"] as? Int, 1)
         let ordinary = KSOptions().formatContextOptions
         XCTAssertNil(ordinary["ck_fragment_retry"])
-        XCTAssertNil(ordinary["reconnect"]); XCTAssertNil(ordinary["reconnect_on_http_error"])
+        XCTAssertEqual(ordinary["reconnect"] as? Int, 1, "preserve the pinned ordinary SDK default")
+        XCTAssertNil(ordinary["reconnect_on_http_error"])
     }
 }

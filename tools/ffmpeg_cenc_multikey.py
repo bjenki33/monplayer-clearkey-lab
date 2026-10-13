@@ -117,7 +117,8 @@ def transform(name, text):
                        '    int ck_fragment_retry;\n')
         text = replace(text, '    AVIOContext *input;\n',
                        '    AVIOContext *input;\n'
-                       '    AVIOInterruptCB ck_parent_interrupt;\n    int64_t ck_open_deadline;\n')
+                       '    AVIOInterruptCB ck_parent_interrupt;\n    int64_t ck_open_deadline;\n'
+                       '    int ck_fragment_error;\n')
         signature = ('static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,\n'
                      '                    AVDictionary **opts, AVDictionary *opts2, int *is_http)\n')
         text = replace(text, signature,
@@ -195,7 +196,13 @@ static int ck_open_fragment(DASHContext *c, struct representation *pls,
         signature = 'static int open_input(DASHContext *c, struct representation *pls, struct fragment *seg)\n'
         text = replace(text, signature, recovery + signature)
         text = replace(text, '    ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);\n',
-                       '    ret = ck_open_fragment(c, pls, url, &opts);\n')
+                       '    ret = ck_open_fragment(c, pls, url, &opts);\n'
+                       '    if (ret < 0 && c->ck_fragment_retry)\n'
+                       '        pls->ck_fragment_error = ret;\n')
+        text = replace(text, '    DASHContext *c = v->parent->priv_data;\n\nrestart:\n',
+                       '    DASHContext *c = v->parent->priv_data;\n\n'
+                       '    if (c->ck_fragment_retry && v->ck_fragment_error < 0)\n'
+                       '        return v->ck_fragment_error;\n\nrestart:\n')
         text = replace(text, '            av_log(v->parent, AV_LOG_WARNING, "Failed to open fragment of playlist\\n");\n',
                        '            if (c->ck_fragment_retry)\n'
                        '                goto end; /* Bounded route fails rather than skipping forever. */\n'

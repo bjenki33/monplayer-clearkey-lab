@@ -260,6 +260,10 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         options.formatContextOptions["tls_verify"] = 1
         CKDiagnostic.trace("validated manifest; player starting")
         let player = KSPlayerLayer(url: url, options: options, delegate: self)
+        // The pinned SDK's logger assumes every URL interrupt opaque is a
+        // Swift player. Our deadline callback owns a C representation instead.
+        av_log_set_callback(av_log_default_callback)
+        av_log_set_level(AV_LOG_QUIET)
         layer = player; player.translatesAutoresizingMaskIntoConstraints = false; view.insertSubview(player, at: 0)
         NSLayoutConstraint.activate([
             player.leadingAnchor.constraint(equalTo: view.leadingAnchor), player.trailingAnchor.constraint(equalTo: view.trailingAnchor),
