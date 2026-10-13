@@ -149,7 +149,9 @@ final class CKLicenseTests: XCTestCase {
         XCTAssertEqual(result.keys.distinctKeyCount, 2)
         for mode in ["redirectcross","redirect302","loop"] {
             do { _ = try await CKSourceResolver.resolve(CKLicenseFixtures.channel(mode: mode)); XCTFail("redirect must fail closed") }
-            catch let error as CKResolutionError { XCTAssertEqual(error.underlying as? CKFailure, .unsafeRedirect) }
+            catch let error as CKResolutionError {
+                XCTAssertEqual(error.underlying as? CKFailure, .unsafeRedirect, "owned redirect mode \(mode): \(CKDiagnostic.message(error.underlying, stage: error.stage))")
+            }
         }
     }
     func testActualEphemeralSessionsDoNotRetainResponseCookies() async throws {

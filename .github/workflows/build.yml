@@ -1,6 +1,16 @@
 name: Build isolated ClearKey prototype
 on:
   workflow_dispatch:
+    inputs:
+      prior_evidence_run:
+        description: 'Optional owned CI result to inspect;no private sources'
+        required: false
+        default: ''
+      asan:
+        description: 'Enable native Address Sanitizer for owned tests'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -30,6 +40,16 @@ jobs:
           mkdir -p Sources/Assets
           ffmpeg -hide_banner -loglevel error -f lavfi -i color=black:size=32x32:rate=1/30 \
             -t 28800 -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart Sources/Assets/CKPlaceholder.mp4
+      - name: Inspect previous owned CI crash if requested
+        if: inputs.prior_evidence_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_RUN: ${{ inputs.prior_evidence_run }}
+        run: |
+          [[ "$PRIOR_RUN" =~ ^[0-9]+$ ]] || exit 1
+          mkdir -p build/prior-evidence
+          gh run download "$PRIOR_RUN" -R "$GITHUB_REPOSITORY" -n ClearKey-build-evidence -D build/prior-evidence
+          python3 tools/owned_test_diagnostics.py build/prior-evidence/CKTests.xcresult build/previous-owned-diagnostics
       - name: Generate framework and test host
         run: |
           brew install xcodegen nasm
@@ -71,6 +91,8 @@ jobs:
             -clonedSourcePackagesDirPath build/packages -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build/device-build.log
       - name: Run native module tests
+        env:
+          OWNED_ASAN: ${{ inputs.asan }}
         run: |
           set -o pipefail
           python3 tools/fixture_http.py Tests/Fixtures > build/fixture-http.log 2>&1 &
@@ -85,8 +107,11 @@ jobs:
           xcodebuild -project CKBridge.xcodeproj -scheme CKHost -configuration Debug \
             -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build/simulator \
             -clonedSourcePackagesDirPath build/packages \
-            -resultBundlePath build/CKTests.xcresult CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath build/CKTests.xcresult -enableAddressSanitizer "${OWNED_ASAN:-false}" CODE_SIGNING_ALLOWED=NO \
             test 2>&1 | tee build/native-tests.log
+      - name: Export owned test failures without private data
+        if: always()
+        run: python3 tools/owned_test_diagnostics.py build/CKTests.xcresult build/owned-test-diagnostics
       - name: Package framework only, never third-party IPA or private sources
         run: python3 tools/package_module.py build/device/Build/Products/Release-iphoneos build/module
       - uses: actions/upload-artifact@v4

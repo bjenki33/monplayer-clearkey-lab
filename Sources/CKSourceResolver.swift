@@ -53,7 +53,7 @@ enum CKHTTP {
         let policy = CKHTTPRedirectPolicy(request: request, role: role)
         let session = URLSession(configuration: configuration, delegate: policy, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        return try await withTaskCancellationHandler(operation: {
+        do { return try await withTaskCancellationHandler(operation: {
             let (bytes, response) = try await session.bytes(for: request)
             guard !policy.wasDenied else { throw CKFailure.unsafeRedirect }
             guard let response = response as? HTTPURLResponse else { throw CKFailure.network }
@@ -68,7 +68,14 @@ enum CKHTTP {
             }
             try Task.checkCancellation()
             return (data, response)
-        }, onCancel: { session.invalidateAndCancel() })
+        }, onCancel: { session.invalidateAndCancel() }) }
+        catch {
+            if Task.isCancelled { throw CancellationError() }
+            // URLSession may fail its async continuation before yielding the
+            // rejected redirect response; preserve the policy's safe taxonomy.
+            if policy.wasDenied { throw CKFailure.unsafeRedirect }
+            throw error
+        }
     }
 }
 
