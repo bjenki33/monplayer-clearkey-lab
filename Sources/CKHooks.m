@@ -7,9 +7,15 @@
 static const void *CKTaskData = &CKTaskData;
 static const void *CKTaskRejected = &CKTaskRejected;
 static IMP CKOriginalTask, CKOriginalURLTask, CKOriginalDownloadTask, CKOriginalURLDownloadTask;
-static IMP CKOriginalData, CKOriginalComplete, CKOriginalDownloaded;
+static IMP CKOriginalSessionFactory;
+static NSMutableSet<NSValue *> *CKDelegateHooks;
 
 static Class CKRuntimeClass(void) { return NSClassFromString(@"CKRuntime"); }
+static void CKNativeEvent(NSInteger code) {
+    Class runtime = CKRuntimeClass();
+    if ([runtime respondsToSelector:@selector(nativeEvent:)])
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(runtime, @selector(nativeEvent:), code);
+}
 static void CKObserve(NSData *data, NSURL *url) {
     Class runtime = CKRuntimeClass();
     if (data && [runtime respondsToSelector:@selector(observe:source:)]) {
@@ -70,7 +76,7 @@ static NSURLSessionDownloadTask *CKURLDownloadTask(id self, SEL cmd, NSURL *url,
     } : nil;
     return ((id (*)(id, SEL, id, id))CKOriginalURLDownloadTask)(self, cmd, url, wrapped);
 }
-static void CKDidReceive(id self, SEL cmd, NSURLSession *session, NSURLSessionDataTask *task, NSData *data) {
+static void CKReceive(NSURLSessionDataTask *task, NSData *data) {
     @synchronized(task) {
         NSMutableData *buffer = objc_getAssociatedObject(task, CKTaskData);
         if (!buffer && data.length && !objc_getAssociatedObject(task, CKTaskRejected)) {
@@ -92,9 +98,8 @@ static void CKDidReceive(id self, SEL cmd, NSURLSession *session, NSURLSessionDa
             }
         }
     }
-    ((void (*)(id, SEL, id, id, id))CKOriginalData)(self, cmd, session, task, data);
 }
-static void CKDidComplete(id self, SEL cmd, NSURLSession *session, NSURLSessionTask *task, NSError *error) {
+static void CKComplete(NSURLSessionTask *task, NSError *error) {
     NSData *data;
     @synchronized(task) {
         data = [objc_getAssociatedObject(task, CKTaskData) copy];
@@ -102,11 +107,63 @@ static void CKDidComplete(id self, SEL cmd, NSURLSession *session, NSURLSessionT
         objc_setAssociatedObject(task, CKTaskRejected, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (!error && CKSuccessfulResponse(task.response)) CKObserve(data, task.response.URL ?: task.currentRequest.URL);
-    ((void (*)(id, SEL, id, id, id))CKOriginalComplete)(self, cmd, session, task, error);
 }
-static void CKDidDownload(id self, SEL cmd, NSURLSession *session, NSURLSessionDownloadTask *task, NSURL *file) {
-    CKObserveFile(file, task.response);
-    ((void (*)(id, SEL, id, id, id))CKOriginalDownloaded)(self, cmd, session, task, file);
+static BOOL CKEnterCallback(NSURLSessionTask *task, SEL selector) {
+    // A subclass calling super must forward both originals but observe only once.
+    NSMutableDictionary *local = NSThread.currentThread.threadDictionary;
+    NSMutableSet *active = local[@"CKNativeDelegateCallbacks"];
+    if (!active) local[@"CKNativeDelegateCallbacks"] = active = [NSMutableSet set];
+    NSString *key = [NSString stringWithFormat:@"%p:%@", task, NSStringFromSelector(selector)];
+    if ([active containsObject:key]) return NO;
+    [active addObject:key]; return YES;
+}
+static void CKLeaveCallback(NSURLSessionTask *task, SEL selector) {
+    NSMutableSet *active = NSThread.currentThread.threadDictionary[@"CKNativeDelegateCallbacks"];
+    [active removeObject:[NSString stringWithFormat:@"%p:%@", task, NSStringFromSelector(selector)]];
+    if (!active.count) [NSThread.currentThread.threadDictionary removeObjectForKey:@"CKNativeDelegateCallbacks"];
+}
+static void CKBindDelegate(id delegate) {
+    if (!delegate) return;
+    Class target = object_getClass(delegate);
+    NSArray<NSString *> *selectors = @[@"URLSession:dataTask:didReceiveData:",
+        @"URLSession:task:didCompleteWithError:", @"URLSession:downloadTask:didFinishDownloadingToURL:"];
+    @synchronized(NSURLSession.class) {
+        if (!CKDelegateHooks) CKDelegateHooks = [NSMutableSet set];
+        for (NSUInteger index = 0; index < selectors.count; index++) {
+            SEL selector = NSSelectorFromString(selectors[index]);
+            Method method = class_getInstanceMethod(target, selector);
+            IMP original = method ? method_getImplementation(method) : NULL;
+            if (original && [CKDelegateHooks containsObject:[NSValue valueWithPointer:original]]) continue;
+            struct objc_method_description description = protocol_getMethodDescription(
+                index == 2 ? @protocol(NSURLSessionDownloadDelegate) :
+                index == 0 ? @protocol(NSURLSessionDataDelegate) : @protocol(NSURLSessionTaskDelegate),
+                selector, NO, YES);
+            if (!description.types) description = protocol_getMethodDescription(
+                @protocol(NSURLSessionDownloadDelegate), selector, YES, YES);
+            const char *encoding = method ? method_getTypeEncoding(method) : description.types;
+            if (!encoding) continue;
+            IMP wrapper = imp_implementationWithBlock(^(id receiver, NSURLSession *session, NSURLSessionTask *task, id value) {
+                BOOL outer = CKEnterCallback(task, selector);
+                @try {
+                    if (outer) {
+                        if (index == 0) CKReceive((NSURLSessionDataTask *)task, value);
+                        else if (index == 1) CKComplete(task, value);
+                        else CKObserveFile(value, task.response);
+                    }
+                    if (original) ((void (*)(id, SEL, id, id, id))original)(receiver, selector, session, task, value);
+                } @finally { if (outer) CKLeaveCallback(task, selector); }
+            });
+            [CKDelegateHooks addObject:[NSValue valueWithPointer:wrapper]];
+            class_replaceMethod(target, selector, wrapper, encoding);
+            CKNativeEvent(2);
+        }
+    }
+}
+static NSURLSession *CKSessionFactory(id self, SEL cmd, NSURLSessionConfiguration *config,
+                                     id delegate, NSOperationQueue *queue) {
+    // Bind before Foundation caches optional delegate callbacks, including late Swift classes.
+    CKBindDelegate(delegate);
+    return ((id (*)(id, SEL, id, id, id))CKOriginalSessionFactory)(self, cmd, config, delegate, queue);
 }
 @interface AVPlayer (CKHooks)
 - (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item __attribute__((objc_method_family(init)));
@@ -146,13 +203,8 @@ __attribute__((constructor)) static void CKBootstrap(void) {
         CKInstall([NSURLSession.sharedSession class], @selector(dataTaskWithURL:completionHandler:), (IMP)CKURLTask, &CKOriginalURLTask);
         CKInstall([NSURLSession.sharedSession class], @selector(downloadTaskWithRequest:completionHandler:), (IMP)CKDownloadTask, &CKOriginalDownloadTask);
         CKInstall([NSURLSession.sharedSession class], @selector(downloadTaskWithURL:completionHandler:), (IMP)CKURLDownloadTask, &CKOriginalURLDownloadTask);
-        Class delegate = NSClassFromString(@"Alamofire.SessionDelegate");
-        if (!delegate) delegate = NSClassFromString(@"_TtC9Alamofire15SessionDelegate");
-        if (delegate) {
-            CKInstall(delegate, @selector(URLSession:dataTask:didReceiveData:), (IMP)CKDidReceive, &CKOriginalData);
-            CKInstall(delegate, @selector(URLSession:task:didCompleteWithError:), (IMP)CKDidComplete, &CKOriginalComplete);
-            CKInstall(delegate, @selector(URLSession:downloadTask:didFinishDownloadingToURL:), (IMP)CKDidDownload, &CKOriginalDownloaded);
-        }
+        CKInstall(object_getClass(NSURLSession.class), @selector(sessionWithConfiguration:delegate:delegateQueue:),
+                  (IMP)CKSessionFactory, &CKOriginalSessionFactory);
         CKExchange(AVPlayer.class, @selector(initWithPlayerItem:), @selector(ck_initWithPlayerItem:));
         CKExchange(AVPlayer.class, @selector(initWithURL:), @selector(ck_initWithURL:));
         CKExchange(AVPlayer.class, @selector(replaceCurrentItemWithPlayerItem:), @selector(ck_replaceCurrentItemWithPlayerItem:));
@@ -161,6 +213,7 @@ __attribute__((constructor)) static void CKBootstrap(void) {
             usingBlock:^(NSNotification *note) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                     Class runtime = CKRuntimeClass();
+                    CKNativeEvent(1);
                     if ([runtime respondsToSelector:@selector(installPanel)]) ((void (*)(id,SEL))objc_msgSend)(runtime,@selector(installPanel));
                 });
             }];

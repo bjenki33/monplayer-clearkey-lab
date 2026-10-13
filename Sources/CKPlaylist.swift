@@ -202,6 +202,7 @@ final class CKRegistry {
     private var entries: [String: (CKChannel, Date, String?)] = [:]
     func observe(_ data: Data, source: URL?) {
         guard let report = CKPlaylist.report(data, relativeTo: source) else { return }
+        CKRuntime.nativeEvent(report.channels.isEmpty ? 4 : 3)
         let channels = report.channels, owner = source?.absoluteString
         lock.lock(); defer { lock.unlock() }
         entries = entries.filter { $0.value.1.timeIntervalSinceNow > -3600 &&

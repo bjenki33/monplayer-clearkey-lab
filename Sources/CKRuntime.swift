@@ -20,11 +20,25 @@ enum CKPresentation {
     @objc(observe:source:) public static func observe(_ data: Data, source: URL?) {
         CKRegistry.shared.observe(data, source: source)
     }
+    private static let nativeLogLock = NSLock()
+    private static var nativeLogCounts: [Int: Int] = [:]
+    @objc(nativeEvent:) public static func nativeEvent(_ code: Int) {
+        let tags = [1: "boot", 2: "delegate-bound", 3: "playlist-registered",
+                    4: "playlist-no-clearkey", 5: "route-miss", 6: "route-match", 7: "placeholder-missing"]
+        guard let tag = tags[code] else { return }
+        nativeLogLock.lock()
+        let count = nativeLogCounts[code, default: 0] + 1
+        nativeLogCounts[code] = count
+        nativeLogLock.unlock()
+        if count <= 12 { CKDiagnostic.trace("native \(tag) #\(count)") }
+    }
     @objc(route:) public static func route(_ item: AVPlayerItem) -> Bool {
         guard let asset = item.asset as? AVURLAsset else { return false }; return routeURL(asset.url)
     }
     @objc(routeURL:) public static func routeURL(_ url: URL) -> Bool {
-        guard placeholderItem() != nil, let channel = CKRegistry.shared.channel(url) else { return false }
+        guard placeholderItem() != nil else { nativeEvent(7); return false }
+        guard let channel = CKRegistry.shared.channel(url) else { nativeEvent(5); return false }
+        nativeEvent(6)
         DispatchQueue.main.async { open(channel) }
         return true
     }
