@@ -44,14 +44,16 @@ final class CKLiveEngineTests: XCTestCase {
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         print("OWNED LIVE RESULT: advance \(player.currentPlaybackTime-clock)s; distinct frames \(fingerprints.count); \(controller.metrics.summary)")
-        XCTAssertGreaterThan(player.currentPlaybackTime - clock, 4, "audio-driven media clock must advance")
-        XCTAssertGreaterThan(fingerprints.count, 3, "decoded/displayed moving frames must change across segments")
+        XCTAssertGreaterThan(player.currentPlaybackTime - clock, 7, "media must progress steadily across the8second observation")
+        XCTAssertGreaterThan(fingerprints.count, 30, "moving frames must keep changing,not freeze across segments")
         XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
         let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18761/live/engineprogress/stats")!)
         let ages = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Double])
         print("OWNED LIVE INITIAL AGES: \(ages)")
         XCTAssertLessThan(try XCTUnwrap(ages["video"]), 10, "selected video must start near live,not at the expiring DVR edge")
         XCTAssertLessThan(try XCTUnwrap(ages["audio"]), 10, "audio must start near the same live position")
+        XCTAssertEqual(ages["future_requests"] ?? 0, 0, "player must wait instead of requesting unpublished segments")
+        XCTAssertEqual(ages["expired_requests"] ?? 0, 0, "player must avoid expired DVR segments")
     }
 
     @MainActor

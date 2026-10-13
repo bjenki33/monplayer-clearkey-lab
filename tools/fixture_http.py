@@ -18,6 +18,7 @@ ET.register_namespace('', NS)
 ET.register_namespace('cenc', 'urn:mpeg:cenc:2013')
 SESSIONS = {}
 SESSION_LOCK = threading.Lock()
+SEQUENCE_BASE = 895000000
 
 
 def live_manifest(session):
@@ -52,7 +53,7 @@ def live_manifest(session):
                 timeline.remove(entry)
             if not entries:
                 raise RuntimeError('Owned live fixture exhausted or not available')
-            template.set('startNumber', str(entries[0][0]))
+            template.set('startNumber', str(entries[0][0] + SEQUENCE_BASE))
             for _, timestamp, duration in entries:
                 ET.SubElement(timeline, f'{{{NS}}}S', {'t': str(timestamp), 'd': str(duration)})
             for field in ['initialization', 'media']:
@@ -71,7 +72,7 @@ def live_segment(session, media):
     match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
     if not match:
         return True
-    group, number = match.group(1), int(match.group(2))
+    group, number = match.group(1), int(match.group(2)) - SEQUENCE_BASE
     tree = ET.parse(ROOT / f'live-source/{group}/manifest.mpd')
     template = next(tree.getroot().iter(f'{{{NS}}}SegmentTemplate'))
     scale, current = int(template.get('timescale')), int(template.get('startNumber', '1'))
@@ -85,7 +86,12 @@ def live_segment(session, media):
                     state = SESSIONS[session]
                     age = time.monotonic() - state['clock'] - timestamp / scale
                     state['ages'].setdefault(group, age)
-                return age >= duration / scale and age <= 32
+                allowed = age >= duration / scale and age <= 32
+                if not allowed:
+                    with SESSION_LOCK:
+                        key = 'future_requests' if age < duration / scale else 'expired_requests'
+                        state['ages'][key] = state['ages'].get(key, 0) + 1
+                return allowed
             current += 1; timestamp += duration
     return False
 
@@ -117,6 +123,9 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
                 allowed = live_segment(session, media)
+                match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
+                if match:
+                    media = f'{match.group(1)}/chunk-stream0-{int(match.group(2))-SEQUENCE_BASE:05d}.m4s'
                 relative = 'live-source/' + media
             else:
                 relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else '_missing_'

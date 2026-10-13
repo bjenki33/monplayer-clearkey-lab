@@ -117,6 +117,12 @@ IPA and record all changed ZIP entries and hashes.
 - Owned rolling live tests use moving encrypted video/stereo,different keys,
   expired/unpublished segment rejection and actual engine/render progression.
   They compare legacy old-edge selection with near-live video/audio start ages.
+- Selected live refresh converts global segment numbers into relative timeline
+  indices and back,without truncating audio timing to whole seconds. At the
+  live edge it waits interruptibly up to20seconds instead of skipping through
+  unpublished fragment numbers. The default/ordinary paths remain unchanged.
+- The owned fixture uses large segment numbers like production sources;tests
+  require steady8second progression and zero future/expired fragment requests.
 - Safe queue diagnostics show decoded frames,packet counts and fps;Ready-- is
   not interpreted as smooth playback merely because a first frame appeared.
 - Simulator/live-fixture results are not physical ON stability proof.

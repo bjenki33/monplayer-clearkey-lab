@@ -14,7 +14,7 @@ ORIGINAL = {
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
 }
-MARKER = '/* CKBridge multikey v3: supplied keys, DASH selection and live delay. */\n'
+MARKER = '/* CKBridge multikey v4: supplied keys and opt-in live timeline fixes. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -115,6 +115,52 @@ def transform(name, text):
                        '            /* Opt-in near-live start avoids expired DVR-window fragments. */\n'
                        '            start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) -\n'
                        '                                (int64_t)(c->ck_live_delay ? c->ck_live_delay : 60) * pls->fragment_timescale;\n')
+        for kind in ['video', 'audio']:
+            before = (
+                f'            int64_t currentTime = get_segment_start_time_based_on_timeline(cur_{kind}, cur_{kind}->cur_seq_no) / cur_{kind}->fragment_timescale;\n'
+                '            // update segments\n'
+                f'            ccur_{kind}->cur_seq_no = calc_next_seg_no_from_timelines(ccur_{kind}, currentTime * cur_{kind}->fragment_timescale - 1);\n'
+                f'            if (ccur_{kind}->cur_seq_no >= 0) {{\n'
+                f'                move_timelines(ccur_{kind}, cur_{kind}, c);\n'
+                '            }\n')
+            after = (
+                '            if (c->ck_live_delay) {\n'
+                f'                int64_t relative = cur_{kind}->cur_seq_no - cur_{kind}->first_seq_no;\n'
+                f'                int64_t wanted = get_segment_start_time_based_on_timeline(cur_{kind}, relative);\n'
+                f'                int64_t index = calc_next_seg_no_from_timelines(ccur_{kind}, wanted - 1);\n'
+                '                if (index >= 0) {\n'
+                f'                    ccur_{kind}->cur_seq_no = ccur_{kind}->first_seq_no + index;\n'
+                f'                    move_timelines(ccur_{kind}, cur_{kind}, c);\n'
+                '                }\n'
+                '            } else {\n' + before + '            }\n')
+            text = replace(text, before, after)
+        before = (
+            '        min_seq_no = calc_min_seg_no(pls->parent, pls);\n'
+            '        max_seq_no = calc_max_seg_no(pls, c);\n\n'
+            '        if (pls->timelines || pls->fragments) {\n'
+            '            refresh_manifest(pls->parent);\n'
+            '        }\n')
+        after = (
+            '        if (c->ck_live_delay && pls->timelines) {\n'
+            '            int64_t deadline = av_gettime_relative() + 20 * AV_TIME_BASE;\n'
+            '            for (;;) {\n'
+            '                if (ff_check_interrupt(c->interrupt_callback) ||\n'
+            '                    refresh_manifest(pls->parent) < 0)\n'
+            '                    return NULL;\n'
+            '                min_seq_no = calc_min_seg_no(pls->parent, pls);\n'
+            '                max_seq_no = calc_max_seg_no(pls, c);\n'
+            '                if (pls->cur_seq_no <= max_seq_no)\n'
+            '                    break;\n'
+            '                /* Wait at live edge;never skip into unpublished numbers. */\n'
+            '                if (av_gettime_relative() >= deadline)\n'
+            '                    return NULL;\n'
+            '                av_usleep(250000);\n'
+            '            }\n'
+            '        } else {\n' + before + '        }\n')
+        text = replace(text, before, after)
+        before = 'get_segment_start_time_based_on_timeline(pls, pls->cur_seq_no));'
+        text = replace(text, before,
+                       'get_segment_start_time_based_on_timeline(pls, pls->cur_seq_no - (c->ck_live_delay ? pls->first_seq_no : 0)));')
         selection = r'''
 /* Filter before component probing,including every live manifest refresh. */
 static int ck_select_video_representation(AVFormatContext *s)

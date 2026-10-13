@@ -70,6 +70,15 @@ class BackportTests(unittest.TestCase):
         self.assertIn('"ck_live_delay"', dash)
         self.assertIn('AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60', dash)
 
+    def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        for kind in ['video', 'audio']:
+            self.assertIn(f'cur_{kind}->cur_seq_no - cur_{kind}->first_seq_no', dash)
+            self.assertIn(f'ccur_{kind}->first_seq_no + index', dash)
+        self.assertIn('av_gettime_relative() + 20 * AV_TIME_BASE', dash)
+        self.assertIn('av_usleep(250000)', dash)
+        self.assertIn('refresh_manifest(pls->parent) < 0', dash)
+
 
 if __name__ == '__main__':
     unittest.main()
