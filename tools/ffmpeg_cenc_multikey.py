@@ -14,7 +14,7 @@ ORIGINAL = {
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
 }
-MARKER = '/* CKBridge multikey v5: supplied keys, live timeline and URL bounds fixes. */\n'
+MARKER = '/* CKBridge multikey v6: supplied keys, live timeline, URL bounds and fragment recovery. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -113,7 +113,62 @@ def transform(name, text):
                        '    tmp_max_url_size = aligned(tmp_max_url_size + 1);\n')
         text = replace(text, '    char *cenc_decryption_key;\n',
                        '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
-                       '    char *ck_video_representation;\n    int ck_live_delay;\n')
+                       '    char *ck_video_representation;\n    int ck_live_delay;\n'
+                       '    int ck_fragment_retry;\n')
+        recovery = r'''
+/* Retry only pre-body transport failures on the same declared HTTP GET.
+ * An HTTP status,certificate/format/key error or partial body is not replayed. */
+static int ck_open_fragment(DASHContext *c, struct representation *pls,
+                            const char *url, AVDictionary **opts)
+{
+    const AVDictionaryEntry *method = av_dict_get(c->avio_opts, "method", NULL, 0);
+    int eligible = c->ck_fragment_retry &&
+                   (av_strstart(url, "http://", NULL) || av_strstart(url, "https://", NULL)) &&
+                   (!method || !strcmp(method->value, "GET")) &&
+                   !av_dict_get(c->avio_opts, "post_data", NULL, 0);
+    int ret, retries = 0;
+    int64_t deadline = 0;
+    for (;;) {
+        if (ff_check_interrupt(c->interrupt_callback))
+            return AVERROR_EXIT;
+        ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, *opts, NULL);
+        if (ret >= 0 || !eligible || retries >= 2 ||
+            !(ret == AVERROR_EOF || ret == AVERROR(ECONNRESET) ||
+              ret == AVERROR(ECONNREFUSED) || ret == AVERROR(EPIPE) || ret == AVERROR(ETIMEDOUT)))
+            return ret;
+        if (!deadline)
+            deadline = av_gettime_relative() + 5 * AV_TIME_BASE;
+        {
+            int64_t wake = av_gettime_relative() + (retries ? 750000 : 250000);
+            int64_t remaining;
+            if (wake + 100000 >= deadline)
+                return ret;
+            ff_format_io_close(pls->parent, &pls->input);
+            while (av_gettime_relative() < wake) {
+                if (ff_check_interrupt(c->interrupt_callback))
+                    return AVERROR_EXIT;
+                av_usleep(20000);
+            }
+            remaining = deadline - av_gettime_relative();
+            if (remaining <= 0)
+                return ret;
+            if (av_dict_set_int(opts, "rw_timeout", remaining, 0) < 0 ||
+                av_dict_set_int(opts, "timeout", remaining, 0) < 0)
+                return AVERROR(ENOMEM);
+        }
+        retries++;
+    }
+}
+
+'''
+        signature = 'static int open_input(DASHContext *c, struct representation *pls, struct fragment *seg)\n'
+        text = replace(text, signature, recovery + signature)
+        text = replace(text, '    ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);\n',
+                       '    ret = ck_open_fragment(c, pls, url, &opts);\n')
+        text = replace(text, '            av_log(v->parent, AV_LOG_WARNING, "Failed to open fragment of playlist\\n");\n',
+                       '            if (c->ck_fragment_retry)\n'
+                       '                goto end; /* Bounded route fails rather than skipping forever. */\n'
+                       '            av_log(v->parent, AV_LOG_WARNING, "Failed to open fragment of playlist\\n");\n')
         old_delay = '            start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) - 60 * pls->fragment_timescale; // 60 seconds before end\n'
         text = replace(text, old_delay,
                        '            /* Opt-in near-live start avoids expired DVR-window fragments. */\n'
@@ -217,7 +272,9 @@ static int ck_select_video_representation(AVFormatContext *s)
                        'OFFSET(ck_video_representation), AV_OPT_TYPE_STRING, {.str = NULL}, '
                        'INT_MIN, INT_MAX, .flags = FLAGS },\n'
                        '    { "ck_live_delay", "Opt-in live timeline delay in seconds", '
-                       'OFFSET(ck_live_delay), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60, .flags = FLAGS },\n')
+                       'OFFSET(ck_live_delay), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60, .flags = FLAGS },\n'
+                       '    { "ck_fragment_retry", "Opt-in bounded pre-body fragment transport recovery", '
+                       'OFFSET(ck_fragment_retry), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = FLAGS },\n')
     else:
         raise RuntimeError('Unexpected patch target')
     return MARKER + text

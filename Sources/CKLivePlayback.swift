@@ -93,6 +93,7 @@ class CKLiveOptions: KSOptions {
         preferredForwardBufferDuration = 4; maxBufferDuration = 20
         isSecondOpen = false; videoAdaptable = false
         formatContextOptions["ck_live_delay"] = 6
+        formatContextOptions["ck_fragment_retry"] = 1
     }
     func useLicensedStartupReserve() {
         // Manifest-first license opens favor a real3s reserve. Keep the accepted

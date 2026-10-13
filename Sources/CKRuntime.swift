@@ -177,7 +177,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         resolutionID = UUID()
         let id = resolutionID
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = channel.license.body?.needsKeyIDs == true ? "CK10: preparing declared DASH license challenge..." : "CK10: resolving provider keys and source..."
+        status.text = channel.license.body?.needsKeyIDs == true ? "CK11: preparing declared DASH license challenge..." : "CK11: resolving provider keys and source..."
         CKDiagnostic.trace("isolated source resolution started")
         resolutionTask = Task { [weak self] in
             guard let self else { return }
@@ -266,7 +266,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK10: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK11: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         if !userPaused { armWatchdog(); player.play() }
     }
     private func armWatchdog() {
@@ -329,7 +329,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let renewal = keyRebuilds == 0 ? "" : " / Keys \(keyRebuilds) (new \(keyAcquisitions))"
-        status.text = "CK10: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
+        status.text = "CK11: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }
@@ -342,6 +342,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func player(layer: KSPlayerLayer, finish error: Error?) {
         guard layer === self.layer, !finished else { return }
         if let error { fail(error) }
+        else if playerOptions is CKLiveOptions, !userPaused { fail(CKOpenFailure.unexpectedLiveEnd) }
     }
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
         guard layer === self.layer, !finished, consumeTime.isFinite, consumeTime >= 0 else { return }

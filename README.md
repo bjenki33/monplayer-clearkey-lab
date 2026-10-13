@@ -210,3 +210,22 @@ IPA and record all changed ZIP entries and hashes.
   origin policy needs a separate checked implementation,not this retry claim.
 - HTTP reference:[RFC9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2).
   All remaining roadmap items and physical acceptance are tracked separately.
+
+## CK11 Stage2B Fragment-Open Transport Recovery
+
+- Only the selected live DASH route enablesck_fragment_retry(default0 in core).
+  HTTP(S) GET fragment/init opens retry pre-body EOF/reset/refused/pipe/timeout
+  errors with at most2extra attempts and one5s recovery budget after the normal
+  first request. Backoff0.25/0.75s,remaining I/O/connect timeout and interrupt
+  checks retain the same declared URL,headers and byte offsets.
+- HTTP status/auth,TLS certificate/format/key errors and partial-body reads
+  are not retried. No license request replay,no guessed tokens,no player
+  replacement. Unrecoverable opens in the opt-in route fail rather than
+  entering upstream's unlimited failed-fragment skipping loop.
+- Owned tests exercise actual encrypted moving video/stereo after a mid-play
+  pre-body disconnect,default-off/exhaustion/auth/server/deadline controls,
+  cancellation and all prior key/source/player regressions. Require normal
+  AND sanitized native gates before releasing modified C-core.
+- Limits:pre-body OPEN recovery only,not mid-body resume,HTTP Retry-After/
+  status recovery,cookie/token expiry,CDN credential isolation,HLS/FairPlay,
+  seamless outages or a completed universal-DRM/player roadmap.

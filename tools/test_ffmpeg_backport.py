@@ -79,6 +79,24 @@ class BackportTests(unittest.TestCase):
             self.assertGreater(capacity, length)
             self.assertEqual(capacity % 64, 0)
 
+    def testFragmentRecoveryIsOptInBoundedGETTransportOnlyAndInterruptible(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        start = dash.index('static int ck_open_fragment(')
+        end = dash.index('static int open_input(', start)
+        recovery = dash[start:end]
+        self.assertIn('AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1', dash)
+        self.assertIn('retries >= 2', recovery)
+        self.assertIn('av_gettime_relative() + 5 * AV_TIME_BASE', recovery)
+        self.assertIn('"rw_timeout", remaining', recovery)
+        self.assertIn('"timeout", remaining', recovery)
+        self.assertIn('"post_data"', recovery)
+        self.assertIn('!strcmp(method->value, "GET")', recovery)
+        self.assertNotIn('AVERROR_HTTP', recovery)
+        self.assertNotIn('AVERROR(EIO)', recovery)
+        self.assertIn('ff_check_interrupt(c->interrupt_callback)', recovery)
+        self.assertIn('ret = ck_open_fragment(c, pls, url, &opts);', dash)
+        self.assertIn('goto end; /* Bounded route fails rather than skipping forever. */', dash)
+
     def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
         for kind in ['video', 'audio']:

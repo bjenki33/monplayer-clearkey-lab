@@ -1,7 +1,7 @@
 import Foundation
 
 enum CKStage: String { case key, manifest, playback }
-enum CKOpenFailure: Error { case http(Int), invalidManifest, startupTimeout }
+enum CKOpenFailure: Error { case http(Int), invalidManifest, startupTimeout, unexpectedLiveEnd }
 
 enum CKManifest {
     enum Kind { case dash, hls }
@@ -41,6 +41,7 @@ enum CKDiagnostic {
             case .http(let status): return "\(step): HTTP \(status). Check source access."
             case .invalidManifest: return "Manifest: source did not return valid DASH/HLS."
             case .startupTimeout: return "Video startup timed out after 30 seconds. Tap Play to retry."
+            case .unexpectedLiveEnd: return "Live source stopped unexpectedly. Tap Play to retry."
             }
         }
         if case CKFailure.multipleKeys = error { return "Provider key: one-key-only operation received multiple distinct keys." }
@@ -73,5 +74,5 @@ enum CKDiagnostic {
         }
         return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
-    static func trace(_ message: String) { NSLog("[CKBridge CK10] %@", message) }
+    static func trace(_ message: String) { NSLog("[CKBridge CK11] %@", message) }
 }

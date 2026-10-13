@@ -119,6 +119,46 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def fragment_fault(self, session, media):
+        if not session.startswith('segment'):
+            return False
+        with SESSION_LOCK:
+            state = SESSIONS[session]
+            fault = state.setdefault('fault', {'armed': session.startswith('segmentinit'),
+                                               'target': None, 'attempts': 0})
+            if not fault['armed'] or not media.startswith('video/'):
+                return False
+            if fault['target'] is None:
+                fault['target'] = media
+                fault['range'] = self.headers.get('Range')
+            if media != fault['target']:
+                return False
+            fault['attempts'] += 1
+            attempt = fault['attempts']
+            stats = state['ages']
+            stats['fault_attempts'] = attempt
+            stats['fault_offset_changed'] = stats.get('fault_offset_changed', 0) + int(self.headers.get('Range') != fault['range'])
+            stats['fault_wrong_headers'] = stats.get('fault_wrong_headers', 0) + int(
+                self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None)
+            failed = attempt <= 2 or session.endswith(('always', 'deny', 'server', 'slow'))
+            if failed:
+                stats['fault_failures'] = stats.get('fault_failures', 0) + 1
+            else:
+                stats['fault_successes'] = stats.get('fault_successes', 0) + 1
+        if not failed:
+            return False
+        if session.endswith(('deny', 'server')):
+            self.send_error(403 if session.endswith('deny') else 503)
+        else:
+            if session.endswith('slow') and attempt > 1:
+                time.sleep(6)
+            self.close_connection = True
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR); self.connection.close()
+            except OSError:
+                pass
+        return True
+
     def transport(self, session, mode, post=False):
         if mode == 'stats':
             with SESSION_LOCK:
@@ -281,6 +321,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path.startswith('/transport/'):
             self.transport(*path.split('/')[2:4], post=True)
+        elif path.startswith('/fault/') and path.endswith('/arm'):
+            session = path.split('/')[2]
+            with SESSION_LOCK:
+                state = SESSIONS.get(session)
+                if state is not None:
+                    state['fault'] = {'armed': True, 'target': None, 'attempts': 0}
+            self.send_response(204 if state is not None else 404)
+            self.send_header('Content-Length', '0'); self.end_headers()
         elif path.startswith('/renew/'):
             self.renewal(path.split('/')[-1])
         elif path.startswith('/rotate/') and path.endswith('/advance'):
@@ -330,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
                         state['failures'] += 1
                 if failed:
                     self.send_error(503); return
-            if session.startswith(('licensed', 'rotation')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+            if session.startswith(('licensed', 'rotation', 'segment')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                 self.send_error(403); return
             if not session.isalnum() or len(session) > 64:
                 self.send_error(400); return
@@ -345,9 +393,11 @@ class Handler(BaseHTTPRequestHandler):
             allowed = True
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
-                if session.startswith(('licensed', 'rotation')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+                if session.startswith(('licensed', 'rotation', 'segment')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                     self.send_error(403); return
                 allowed = live_segment(session, media)
+                if allowed and self.fragment_fault(session, media):
+                    return
                 match = re.fullmatch(r'(video|audio|rotatedvideo)/chunk-stream0-(\d+)\.m4s', media)
                 if match:
                     media = f'{match.group(1)}/chunk-stream0-{int(match.group(2))-SEQUENCE_BASE:05d}.m4s'

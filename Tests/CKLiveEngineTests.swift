@@ -23,6 +23,79 @@ final class CKLiveEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(stats["attempts"] ?? 0, 3)
     }
 
+    @MainActor
+    func testActualMidPlayFragmentDisconnectRecoversSameVideoAndStereo() async throws {
+        let session = "segmentengine"
+        let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
+        let controller = CKPlaybackController(channel: try ownedChannel(session: session))
+        window.rootViewController = UINavigationController(rootViewController: controller)
+        window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+        defer { controller.close(); window.rootViewController = previous }
+        try await waitFor { controller.metrics.playableSeconds != nil }
+        let old = try XCTUnwrap(controller.layer)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:18761/fault/\(session)/arm")!)
+        request.httpMethod = "POST"
+        _ = try await CKHTTP.read(request, role: .license, limit: 1024)
+        let player = try XCTUnwrap(old.player as? KSMEPlayer), clock = player.currentPlaybackTime
+        var frames: Set<UInt64> = []
+        for _ in 0..<60 {
+            if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { frames.insert(fingerprint(buffer)) }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let stats = try await CKFragmentFixtures.stats(session)
+        print("OWNED FRAGMENT RESULT: advance \(player.currentPlaybackTime-clock)s; distinct frames \(frames.count); stats \(stats)")
+        XCTAssertTrue(controller.layer === old, "fragment transport recovery must not replay a license or replace the player")
+        XCTAssertGreaterThan(player.currentPlaybackTime - clock, 10)
+        XCTAssertGreaterThan(frames.count, 40)
+        XCTAssertEqual(stats["fault_attempts"], 3); XCTAssertEqual(stats["fault_failures"], 2)
+        XCTAssertEqual(stats["fault_successes"], 1)
+        XCTAssertEqual(stats["fault_offset_changed"], 0); XCTAssertEqual(stats["fault_wrong_headers"], 0)
+        XCTAssertEqual(stats["future_requests"] ?? 0, 0); XCTAssertEqual(stats["expired_requests"] ?? 0, 0)
+        XCTAssertEqual(controller.keyRebuilds, 0); XCTAssertEqual(controller.keyAcquisitions, 0)
+        XCTAssertEqual(controller.layer?.state, .bufferFinished)
+        XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
+    }
+
+    @MainActor
+    func testCloseDuringFragmentRecoveryCannotAttachOrKeepRequesting() async throws {
+        let session = "segmentinitcancelalways"
+        let controller = CKPlaybackController(channel: try ownedChannel(session: session))
+        controller.loadViewIfNeeded()
+        for _ in 0..<200 {
+            if try await CKFragmentFixtures.stats(session)["fault_attempts"] == 1 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let initial = try await CKFragmentFixtures.stats(session)
+        XCTAssertEqual(initial["fault_attempts"], 1)
+        controller.close(); let status = controller.status.text
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let final = try await CKFragmentFixtures.stats(session)
+        XCTAssertEqual(final["fault_attempts"], 1)
+        XCTAssertNil(controller.layer); XCTAssertNil(controller.playerOptions)
+        XCTAssertEqual(controller.status.text, status)
+    }
+
+    @MainActor
+    func testUnrecoverableMidPlayAuthAndTransportStopWithoutEndlessSkipping() async throws {
+        for (session, expected) in [("segmentdeny", 1), ("segmentexhaustalways", 3)] {
+            let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
+            let controller = CKPlaybackController(channel: try ownedChannel(session: session))
+            window.rootViewController = UINavigationController(rootViewController: controller)
+            window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+            defer { controller.close(); window.rootViewController = previous }
+            try await waitFor { controller.metrics.playableSeconds != nil }
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:18761/fault/\(session)/arm")!)
+            request.httpMethod = "POST"
+            _ = try await CKHTTP.read(request, role: .license, limit: 1024)
+            try await waitFor { controller.layer == nil }
+            let stats = try await CKFragmentFixtures.stats(session)
+            XCTAssertEqual(stats["fault_attempts"], Double(expected))
+            XCTAssertEqual(stats["fault_offset_changed"], 0); XCTAssertEqual(stats["fault_wrong_headers"], 0)
+            XCTAssertNil(controller.playerOptions)
+            XCTAssertFalse(controller.status.text?.contains("buffering.") ?? true)
+        }
+    }
+
     final class InflatedProbeOptions: CKLiveOptions {
         override func process(assetTrack: some MediaPlayerTrack) {
             if assetTrack.mediaType == .video { assetTrack.nominalFrameRate = 600 }
@@ -196,6 +269,7 @@ final class CKLiveEngineTests: XCTestCase {
         #EXTINF:-1,Owned live moving video and stereo
         #KODIPROP:inputstream.adaptive.license_type=clearkey
         #KODIPROP:inputstream.adaptive.license_key=000102030405060708090a0b0c0d0e0f:101112131415161718191a1b1c1d1e1f,202122232425262728292a2b2c2d2e2f:303132333435363738393a3b3c3d3e3f
+        \(session.hasPrefix("segment") ? "#KODIPROP:inputstream.adaptive.stream_headers=X-Stream=owned-stream" : "")
         \(url)
         """
         return try XCTUnwrap(CKPlaylist.parse(Data(tags.utf8), relativeTo: nil).first)
