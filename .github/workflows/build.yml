@@ -105,13 +105,18 @@ jobs:
           done
           curl -sf http://127.0.0.1:18761/health >/dev/null
           sanitizer=NO
-          if [[ "$OWNED_ASAN" == "true" ]]; then sanitizer=YES; fi
+          sanitizer_flags=()
+          if [[ "$OWNED_ASAN" == "true" ]]; then
+            sanitizer=YES
+            # SPM's generated dynamic product also needs the sanitizer runtime.
+            sanitizer_flags=('OTHER_LDFLAGS=$(inherited) -fsanitize=address')
+          fi
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
           xcodebuild -project CKBridge.xcodeproj -scheme CKHost -configuration Debug \
             -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build/simulator \
             -clonedSourcePackagesDirPath build/packages \
             -resultBundlePath build/CKTests.xcresult -enableAddressSanitizer "$sanitizer" CODE_SIGNING_ALLOWED=NO \
-            test 2>&1 | tee build/native-tests.log
+            "${sanitizer_flags[@]}" test 2>&1 | tee build/native-tests.log
       - name: Export owned test failures without private data
         if: always()
         run: python3 tools/owned_test_diagnostics.py build/CKTests.xcresult build/owned-test-diagnostics
