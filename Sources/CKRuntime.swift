@@ -262,7 +262,10 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         let player = KSPlayerLayer(url: url, options: options, delegate: self)
         // The pinned SDK's logger assumes every URL interrupt opaque is a
         // Swift player. Our deadline callback owns a C representation instead.
-        av_log_set_callback(av_log_default_callback)
+        av_log_set_callback { pointer, level, format, arguments in
+            guard level <= av_log_get_level(), let format, let arguments else { return }
+            av_log_default_callback(pointer, level, format, arguments)
+        }
         av_log_set_level(AV_LOG_QUIET)
         layer = player; player.translatesAutoresizingMaskIntoConstraints = false; view.insertSubview(player, at: 0)
         NSLayoutConstraint.activate([
