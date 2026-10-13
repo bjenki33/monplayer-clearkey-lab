@@ -401,7 +401,7 @@ final class CKTests: XCTestCase {
         var frameCount: Int = 2
         var frameMaxCount = 4
         var isEndOfFile = false
-        var mediaType: AVMediaType = .video
+        var mediaType: AVFoundation.AVMediaType = .video
     }
     func testLiveStartupReserveAndRefillAreSeparateWithoutZeroBufferHack() {
         let options = CKLiveOptions()
