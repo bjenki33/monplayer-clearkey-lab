@@ -61,6 +61,12 @@ struct CKDASHSelection {
 
 final class CKLiveOptions: KSOptions {
     private let startup = KSOptions()
+    private let snapshotLock = NSLock()
+    private var snapshot = ""
+    var capacitySnapshot: String {
+        snapshotLock.lock(); defer { snapshotLock.unlock() }
+        return snapshot
+    }
     override init() {
         super.init()
         startup.preferredForwardBufferDuration = 1.5; startup.isSecondOpen = false
@@ -68,6 +74,11 @@ final class CKLiveOptions: KSOptions {
         isSecondOpen = false; videoAdaptable = false
     }
     override func playable(capacitys: [CapacityProtocol], isFirst: Bool, isSeek: Bool) -> LoadingState {
+        let summary = capacitys.prefix(2).map {
+            let kind = $0.mediaType == .video ? "V" : "A"
+            return "\(kind) f\($0.frameCount)/\($0.frameMaxCount) p\($0.packetCount) fps\(Int($0.fps.isFinite ? $0.fps : 0))"
+        }.joined(separator: " ")
+        snapshotLock.lock(); snapshot = summary; snapshotLock.unlock()
         // First playback still needs decoded frames AND a real reserve.
         if isFirst { return startup.playable(capacitys: capacitys, isFirst: true, isSeek: isSeek) }
         return super.playable(capacitys: capacitys, isFirst: false, isSeek: isSeek)
@@ -96,5 +107,12 @@ struct CKPlaybackMetrics {
             return String(format: "%.1fs", value)
         }
         return "Key \(seconds(keySeconds)) / MPD \(seconds(manifestSeconds)) / Ready \(seconds(playableSeconds)) / Stalls \(rebufferCount)"
+    }
+    var compact: String {
+        func time(_ value: TimeInterval?) -> String {
+            guard let value, value.isFinite, value >= 0 else { return "--" }
+            return String(format: "%.1f", value)
+        }
+        return "Key \(time(keySeconds)) / MPD \(time(manifestSeconds)) / Ready \(time(playableSeconds)) / Stalls \(rebufferCount)"
     }
 }

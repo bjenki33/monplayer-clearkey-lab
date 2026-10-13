@@ -86,6 +86,22 @@ def main(root):
             template.set('media', name + '/missing-$Number$.m4s')
         video_group.insert(0, unused)
     variants.write(multi / 'variants.mpd', encoding='utf-8', xml_declaration=True)
+    live = root / 'live-source'
+    moving = ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25', '-t', '60',
+              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '50', '-an']
+    dash(live / 'video/manifest.mpd', moving, KID1, KEY1)
+    stereo = ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '60',
+              '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-vn']
+    dash(live / 'audio/manifest.mpd', stereo, KID2, KEY2)
+    live_manifest = ET.parse(live / 'video/manifest.mpd')
+    live_period = live_manifest.getroot().find(f'{{{NS}}}Period')
+    for child in list(live_period):
+        live_period.remove(child)
+    live_period.append(adaptation(live / 'video/manifest.mpd', 'video/', 0, KID1))
+    live_period.append(adaptation(live / 'audio/manifest.mpd', 'audio/', 1, KID2))
+    live_video = live_period.find(f'{{{NS}}}AdaptationSet/{{{NS}}}Representation')
+    live_video.set('id', 'live-selected'); live_video.set('bandwidth', '2000000')
+    live_manifest.write(live / 'manifest.mpd', encoding='utf-8', xml_declaration=True)
     for directory in [root, multi / 'video', multi / 'audio']:
         assert any(b'tenc' in x.read_bytes() or b'senc' in x.read_bytes() for x in directory.glob('*.m4s')), 'fixture is not encrypted'
     assert (multi / 'audio-reference.f32').stat().st_size > 48000 * 4, 'missing owned audio reference'
