@@ -163,3 +163,26 @@ IPA and record all changed ZIP entries and hashes.
 - Source implementation is independently written;no Kodi GPL decoder code is
   copied. Live fetching/renewal and remaining roadmap features are separate
   checkpoints. Candidate native/physical acceptance must be recorded separately.
+
+## CK9 Stage1D Declared-Key Changes
+
+- Monitor only explicitly dynamic,single-period DASH with declared CENC IDs
+  and a positive minimumUpdatePeriod,clamped to2..60s. Enable for manifest-first
+  authorized POST challenges or consistent supplied multikey inline maps.
+  Legacy remote GET and inconsistent single-key compatibility stay untouched.
+- Unchanged IDs do not acquire licenses or rebuild. Newly declared IDs must
+  be present in supplied maps or returned by the same authorized license flow.
+  Reject missing/conflicting/persistent replies;no guessed keys or GET fallback.
+- Replace the real player/context after a validated changed ID set. Pinned
+  KSPlayer set(url:same,options:new) alone does NOT reload decoder options.
+  In-flight updates cannot reopen a closed/failed generation;user pause defers
+  applying completed updates until Play. Keys remain memory-only,bounded128
+  per playback session. This checkpoint can briefly rebuffer at a key change.
+- Owned fixtures switch actual encrypted video init/fragments to a third key,
+  while audio retains its distinct key. Test preloaded versus newly issued
+  licenses separately;require changed decoder,steady clock/render progression,
+  one acquisition,header isolation,negative replies,pause and close safety.
+- Limits:MPD-ID changes only,not generic sample-group/init-only changes,same-ID
+  key replacement,provider-specific expiration renewal,multiple periods or
+  seamless switching. No new FairPlay/Widevine/PlayReady/CDM implementation is
+  claimed. Real-provider key rotation still needs authorized physical testing.

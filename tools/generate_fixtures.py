@@ -10,6 +10,8 @@ KID1 = '000102030405060708090a0b0c0d0e0f'
 KEY1 = '101112131415161718191a1b1c1d1e1f'
 KID2 = '202122232425262728292a2b2c2d2e2f'
 KEY2 = '303132333435363738393a3b3c3d3e3f'
+KID3 = '404142434445464748494a4b4c4d4e4f'
+KEY3 = '505152535455565758595a5b5c5d5e5f'
 NS = 'urn:mpeg:dash:schema:mpd:2011'
 CENC = 'urn:mpeg:cenc:2013'
 ET.register_namespace('', NS)
@@ -90,6 +92,9 @@ def main(root):
     moving = ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25', '-t', '180',
               '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '50', '-an']
     dash(live / 'video/manifest.mpd', moving, KID1, KEY1)
+    # A different video init and every subsequent fragment use a key absent
+    # from the initial licensed session. Audio retains its own distinct key.
+    dash(live / 'rotatedvideo/manifest.mpd', moving, KID3, KEY3)
     stereo = ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '180',
               '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-vn']
     dash(live / 'audio/manifest.mpd', stereo, KID2, KEY2)

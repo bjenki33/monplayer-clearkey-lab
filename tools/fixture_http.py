@@ -17,6 +17,8 @@ from urllib.parse import parse_qs
 KIDS = ['AAECAwQFBgcICQoLDA0ODw', 'ICEiIyQlJicoKSorLC0uLw']
 LICENSE = {'keys': [{'kty': 'oct', 'kid': KIDS[0], 'k': 'EBESExQVFhcYGRobHB0eHw'},
                     {'kty': 'oct', 'kid': KIDS[1], 'k': 'MDEyMzQ1Njc4OTo7PD0-Pw'}], 'type': 'temporary'}
+ROTATED_KID = 'QEFCQ0RFRkdISUpLTE1OTw'
+ROTATED_KEY = {'kty': 'oct', 'kid': ROTATED_KID, 'k': 'UFFSU1RVVldYWVpbXF1eXw'}
 
 ROOT = Path(sys.argv[1]).resolve()
 NS = 'urn:mpeg:dash:schema:mpd:2011'
@@ -34,6 +36,16 @@ def live_manifest(session):
     elapsed = time.monotonic() - clock
     tree = ET.parse(ROOT / 'live-source/manifest.mpd')
     root = tree.getroot()
+    with SESSION_LOCK:
+        rotated = state.get('rotated', False)
+    if rotated:
+        for item in root.iter(f'{{{NS}}}AdaptationSet'):
+            if item.get('contentType') == 'video':
+                for protection in item.findall(f'{{{NS}}}ContentProtection'):
+                    protection.set('{urn:mpeg:cenc:2013}default_KID', '40414243-4445-4647-4849-4a4b4c4d4e4f')
+                for template in item.iter(f'{{{NS}}}SegmentTemplate'):
+                    for field in ['initialization', 'media']:
+                        template.set(field, template.get(field).replace('video/', 'rotatedvideo/'))
     root.set('type', 'dynamic')
     root.attrib.pop('mediaPresentationDuration', None)
     root.set('availabilityStartTime', datetime.fromtimestamp(wall, timezone.utc).isoformat().replace('+00:00', 'Z'))
@@ -75,7 +87,7 @@ def live_manifest(session):
 
 
 def live_segment(session, media):
-    match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
+    match = re.fullmatch(r'(video|audio|rotatedvideo)/chunk-stream0-(\d+)\.m4s', media)
     if not match:
         return True
     group, number = match.group(1), int(match.group(2)) - SEQUENCE_BASE
@@ -92,6 +104,8 @@ def live_segment(session, media):
                     state = SESSIONS[session]
                     age = time.monotonic() - state['clock'] - timestamp / scale
                     state['ages'].setdefault(group, age)
+                    if group == 'rotatedvideo':
+                        state['ages']['rotated_requests'] = state['ages'].get('rotated_requests', 0) + 1
                 allowed = age >= duration / scale and age <= 32
                 if not allowed:
                     with SESSION_LOCK:
@@ -103,6 +117,41 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def renewal(self, session):
+        raw = self.rfile.read(min(128 * 1024 + 1, int(self.headers.get('Content-Length', '0'))))
+        with SESSION_LOCK:
+            state = SESSIONS.get(session)
+            if state is None:
+                self.send_error(404); return
+            rotated = state.get('rotated', False)
+        try:
+            request = json.loads(raw)
+            wanted = {ROTATED_KID if rotated else KIDS[0], KIDS[1]}
+            assert self.headers.get('X-License') == 'owned-license' and self.headers.get('X-Stream') is None
+            assert request['type'] == 'temporary' and set(request['kids']) == wanted
+        except Exception:
+            self.send_error(400); return
+        with SESSION_LOCK:
+            state['ages']['license_requests'] = state['ages'].get('license_requests', 0) + 1
+            if rotated:
+                state['ages']['new_key_requests'] = state['ages'].get('new_key_requests', 0) + 1
+        if rotated and session.endswith('slow'):
+            time.sleep(6)
+        if rotated and session.endswith('denied'):
+            self.send_error(403); return
+        keys = [ROTATED_KEY if rotated else LICENSE['keys'][0], LICENSE['keys'][1]]
+        if rotated and session.endswith('missing'):
+            keys = keys[1:]
+        if rotated and session.endswith('conflict'):
+            keys.append({**LICENSE['keys'][1], 'k': ROTATED_KEY['k']})
+        body = json.dumps({'keys': keys, 'type': 'temporary'}).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body))); self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def license(self, mode, post):
         raw = self.rfile.read(min(128 * 1024 + 1, int(self.headers.get('Content-Length', '0')))) if post else b''
         if mode == 'slow':
@@ -173,7 +222,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path.startswith('/license/'):
+        if path.startswith('/renew/'):
+            self.renewal(path.split('/')[-1])
+        elif path.startswith('/rotate/') and path.endswith('/advance'):
+            session = path.split('/')[2]
+            with SESSION_LOCK:
+                state = SESSIONS.get(session)
+                if state is not None:
+                    state['rotated'] = True
+            self.send_response(204 if state is not None else 404)
+            self.send_header('Content-Length', '0'); self.end_headers()
+        elif path.startswith('/license/'):
             self.license(path.split('/')[-1], True)
         else:
             self.send_error(404)
@@ -201,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         elif path.startswith('/live/') and path.endswith('/manifest.mpd'):
             session = path.split('/')[2]
-            if session.startswith('licensed') and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+            if session.startswith(('licensed', 'rotation')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                 self.send_error(403); return
             if not session.isalnum() or len(session) > 64:
                 self.send_error(400); return
@@ -216,10 +275,10 @@ class Handler(BaseHTTPRequestHandler):
             allowed = True
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
-                if session.startswith('licensed') and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+                if session.startswith(('licensed', 'rotation')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                     self.send_error(403); return
                 allowed = live_segment(session, media)
-                match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
+                match = re.fullmatch(r'(video|audio|rotatedvideo)/chunk-stream0-(\d+)\.m4s', media)
                 if match:
                     media = f'{match.group(1)}/chunk-stream0-{int(match.group(2))-SEQUENCE_BASE:05d}.m4s'
                 relative = 'live-source/' + media

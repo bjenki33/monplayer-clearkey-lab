@@ -18,6 +18,17 @@ struct CKKeySet {
 
     var requiresKeyMap: Bool { distinctKeyCount > 1 }
 
+    func contains(_ ids: [String]) -> Bool { ids.allSatisfy { keys[$0] != nil } }
+
+    func including(_ other: CKKeySet) throws -> CKKeySet {
+        var merged = keys
+        for (id, value) in other.keys {
+            if let previous = merged[id], previous != value { throw CKFailure.invalidKey }
+            merged[id] = value
+        }
+        return try CKKeySet(merged)
+    }
+
     var formatOptions: [String: String] {
         // Preserve CK2's proven single-key path, including inconsistent MPD KIDs.
         if !requiresKeyMap, let key = keys.values.first {

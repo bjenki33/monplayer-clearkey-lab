@@ -38,6 +38,105 @@ final class CKLiveEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testActualPreloadedKeyChangeRebuildsAndKeepsMoving() async throws {
+        try await exerciseRotation(session: "rotationpreloadedengine", preloaded: true)
+    }
+
+    @MainActor
+    func testActualNewLicenseKeyRebuildsAndKeepsMoving() async throws {
+        try await exerciseRotation(session: "rotationlicensedengine", preloaded: false)
+    }
+
+    @MainActor
+    private func waitFor(_ predicate: () -> Bool, seconds: TimeInterval = 22) async throws {
+        let began = ProcessInfo.processInfo.systemUptime
+        while !predicate(), ProcessInfo.processInfo.systemUptime - began < seconds {
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        XCTAssertTrue(predicate(), "owned engine condition must complete within the bounded deadline")
+    }
+
+    @MainActor
+    private func exerciseRotation(session: String, preloaded: Bool) async throws {
+        let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
+        let controller = CKPlaybackController(channel: try CKRotationFixtures.channel(session, preloaded: preloaded))
+        window.rootViewController = UINavigationController(rootViewController: controller)
+        window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+        defer { controller.close(); window.rootViewController = previous }
+        try await waitFor { controller.metrics.playableSeconds != nil }
+        let old = try XCTUnwrap(controller.layer)
+        try await CKRotationFixtures.advance(session)
+        try await waitFor { controller.keyRebuilds == 1 && controller.layer?.state == .bufferFinished }
+        let next = try XCTUnwrap(controller.layer)
+        XCTAssertFalse(next === old, "same-URL set must not masquerade as a decoder rebuild")
+        XCTAssertNil(old.delegate)
+        XCTAssertEqual(controller.keyAcquisitions, preloaded ? 0 : 1)
+        let player = try XCTUnwrap(next.player as? KSMEPlayer), clock = player.currentPlaybackTime
+        var frames: Set<UInt64> = []
+        for _ in 0..<40 {
+            if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { frames.insert(fingerprint(buffer)) }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let stats = try await CKRotationFixtures.stats(session)
+        print("OWNED ROTATION RESULT [\(session)]: advance \(player.currentPlaybackTime-clock)s; distinct frames \(frames.count); rebuilds \(controller.keyRebuilds); new acquisitions \(controller.keyAcquisitions); stats \(stats)")
+        XCTAssertGreaterThan(player.currentPlaybackTime - clock, 7, "audio-driven clock must keep progressing after key change")
+        XCTAssertGreaterThan(frames.count, 30, "new encrypted fragments must render moving frames after rebuild")
+        XCTAssertGreaterThan(stats["rotated_requests"] ?? 0, 0)
+        XCTAssertEqual(stats["license_requests"] ?? 0, preloaded ? 0 : 2)
+        XCTAssertEqual(stats["new_key_requests"] ?? 0, preloaded ? 0 : 1)
+        XCTAssertEqual(controller.keyRebuilds, 1, "unchanged IDs must not rebuild every manifest refresh")
+        XCTAssertEqual(stats["future_requests"] ?? 0, 0); XCTAssertEqual(stats["expired_requests"] ?? 0, 0)
+    }
+
+    @MainActor
+    func testPauseDuringNewLicenseDefersRebuildUntilUserResumes() async throws {
+        let session = "rotationpauseslow"
+        let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
+        let controller = CKPlaybackController(channel: try CKRotationFixtures.channel(session))
+        window.rootViewController = UINavigationController(rootViewController: controller)
+        window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+        defer { controller.close(); window.rootViewController = previous }
+        try await waitFor { controller.metrics.playableSeconds != nil }
+        let old = try XCTUnwrap(controller.layer)
+        try await CKRotationFixtures.advance(session)
+        for _ in 0..<30 {
+            if try await CKRotationFixtures.stats(session)["new_key_requests"] == 1 { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let stats = try await CKRotationFixtures.stats(session)
+        XCTAssertEqual(stats["new_key_requests"], 1)
+        controller.pause()
+        try await Task.sleep(nanoseconds: 6_500_000_000)
+        XCTAssertTrue(controller.layer === old); XCTAssertEqual(controller.keyRebuilds, 0)
+        XCTAssertEqual(controller.layer?.state, .paused)
+        controller.play()
+        try await waitFor { controller.keyRebuilds == 1 && controller.layer?.state == .bufferFinished }
+        XCTAssertFalse(controller.layer === old)
+    }
+
+    @MainActor
+    func testCloseDuringNewLicenseCannotReattachOrChangeStatus() async throws {
+        let session = "rotationcloseslow"
+        let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
+        let controller = CKPlaybackController(channel: try CKRotationFixtures.channel(session))
+        window.rootViewController = UINavigationController(rootViewController: controller)
+        window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+        defer { window.rootViewController = previous }
+        try await waitFor { controller.metrics.playableSeconds != nil }
+        try await CKRotationFixtures.advance(session)
+        for _ in 0..<30 {
+            if try await CKRotationFixtures.stats(session)["new_key_requests"] == 1 { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let stats = try await CKRotationFixtures.stats(session)
+        XCTAssertEqual(stats["new_key_requests"], 1)
+        controller.close(); let status = controller.status.text
+        try await Task.sleep(nanoseconds: 6_500_000_000)
+        XCTAssertNil(controller.layer); XCTAssertNil(controller.playerOptions)
+        XCTAssertEqual(controller.keyRebuilds, 0); XCTAssertEqual(controller.status.text, status)
+    }
+
+    @MainActor
     func testActualLegacyInflatedProbeCannotStartDespiteBufferedPackets() async throws {
         let channel = try ownedChannel(session: "legacyinflated")
         let window = try XCTUnwrap(UIApplication.shared.windows.first)

@@ -131,6 +131,22 @@ struct CKResolvedSource {
 struct CKResolutionError: Error { let stage: CKStage; let underlying: Error }
 
 enum CKSourceResolver {
+    static func manifest(_ channel: CKChannel) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        let result = try await CKHTTP.read(request, role: .manifest, limit: 2 * 1024 * 1024)
+        _ = try CKManifest.validatedURL(result.0, response: result.1)
+        return result
+    }
+
+    static func keys(_ channel: CKChannel, ids: [String]) async throws -> CKKeySet {
+        if let request = try channel.keyRequest(kids: ids) {
+            let result = try await CKHTTP.read(request, role: .license, limit: 1024 * 1024)
+            return try channel.license.keys(from: result.0, requested: ids)
+        }
+        return try CKKeySet(CKKeys.parse(Data(channel.license.source.utf8)))
+    }
+
     static func resolve(_ channel: CKChannel) async throws -> CKResolvedSource {
         var stage = CKStage.key
         do {
@@ -138,11 +154,8 @@ enum CKSourceResolver {
             let spec = channel.license
             var manifest: (Data,HTTPURLResponse)?, manifestSeconds = TimeInterval(0), ids: [String] = []
             func fetchManifest() async throws -> (Data,HTTPURLResponse,TimeInterval) {
-                var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-                channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
                 let began = ProcessInfo.processInfo.systemUptime
-                let result = try await CKHTTP.read(request, role: .manifest, limit: 2 * 1024 * 1024)
-                _ = try CKManifest.validatedURL(result.0, response: result.1)
+                let result = try await Self.manifest(channel)
                 return (result.0,result.1,ProcessInfo.processInfo.systemUptime - began)
             }
             if spec.body?.needsKeyIDs == true {
@@ -153,11 +166,7 @@ enum CKSourceResolver {
             }
             stage = .key
             let began = ProcessInfo.processInfo.systemUptime
-            let keys: CKKeySet
-            if let request = try channel.keyRequest(kids: ids) {
-                let result = try await CKHTTP.read(request, role: .license, limit: 1024 * 1024)
-                keys = try spec.keys(from: result.0, requested: ids)
-            } else { keys = try CKKeySet(CKKeys.parse(Data(spec.source.utf8))) }
+            let keys = try await Self.keys(channel, ids: ids)
             let keySeconds = ProcessInfo.processInfo.systemUptime - began
             if manifest == nil {
                 stage = .manifest

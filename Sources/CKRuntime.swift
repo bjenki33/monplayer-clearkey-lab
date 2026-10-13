@@ -134,6 +134,11 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     var layer: KSPlayerLayer?
     private var resolutionTask: Task<Void, Never>?
     private var resolutionID = UUID()
+    private var rotationTask: Task<Void, Never>?
+    private var pendingRotation: CKRotationUpdate?
+    private var userPaused = false
+    private(set) var keyRebuilds = 0
+    private(set) var keyAcquisitions = 0
     var watchdog: DispatchWorkItem?
     var openingStream = false
     var onClose: (() -> Void)?
@@ -172,7 +177,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         resolutionID = UUID()
         let id = resolutionID
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = channel.license.body?.needsKeyIDs == true ? "CK8: preparing declared DASH license challenge..." : "CK8: resolving provider keys and source..."
+        status.text = channel.license.body?.needsKeyIDs == true ? "CK9: preparing declared DASH license challenge..." : "CK9: resolving provider keys and source..."
         CKDiagnostic.trace("isolated source resolution started")
         resolutionTask = Task { [weak self] in
             guard let self else { return }
@@ -182,6 +187,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
                 self.resolutionTask = nil
                 self.metrics.keySeconds = result.keySeconds; self.metrics.manifestSeconds = result.manifestSeconds
                 self.start(result.keys, url: result.url, selection: CKDASHSelection.plan(result.data))
+                self.watchKeyChanges(result, id: id)
             } catch {
                 guard !Task.isCancelled, !self.finished, self.resolutionID == id else { return }
                 self.resolutionTask = nil
@@ -189,6 +195,44 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
                 else { self.fail(error, stage: .key) }
             }
         }
+    }
+    private func watchKeyChanges(_ source: CKResolvedSource, id: UUID) {
+        rotationTask?.cancel(); pendingRotation = nil
+        guard let initial = CKRotationState.begin(channel: channel, source: source) else { return }
+        rotationTask = Task { [weak self] in
+            var state = initial
+            do {
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: UInt64(state.interval * 1_000_000_000))
+                    guard let self, !self.finished, self.resolutionID == id, self.layer != nil else { return }
+                    guard !self.userPaused, self.pendingRotation == nil, !self.openingStream,
+                          self.layer?.state != .paused else { continue }
+                    let update = try await CKKeyRotation.refresh(self.channel, state: state)
+                    guard !Task.isCancelled, !self.finished, self.resolutionID == id else { return }
+                    state = update.state
+                    if update.changed {
+                        if self.userPaused || self.layer?.state == .paused { self.pendingRotation = update }
+                        else { self.applyRotation(update) }
+                    }
+                }
+            } catch {
+                guard let self, !Task.isCancelled, !self.finished, self.resolutionID == id else { return }
+                if let failure = error as? CKResolutionError { self.fail(failure.underlying, stage: failure.stage) }
+                else { self.fail(error, stage: .key) }
+            }
+        }
+    }
+    private func applyRotation(_ update: CKRotationUpdate) {
+        guard !finished, update.changed else { return }
+        // Pinned set(url:same,options:new) skips replacement. Tear down the old
+        // public player and create a fresh context that actually reads the map.
+        let old = layer
+        layer = nil; old?.delegate = nil; old?.pause(); old?.player.shutdown(); old?.removeFromSuperview()
+        watchdog?.cancel(); watchdog = nil; playerOptions = nil
+        keyRebuilds += 1; if update.fetched { keyAcquisitions += 1 }
+        openingStream = true
+        CKDiagnostic.trace("declared key change; decoder rebuild \(keyRebuilds); new acquisitions \(keyAcquisitions)")
+        start(update.state.keys, url: update.url, selection: CKDASHSelection.plan(update.data))
     }
     func start(_ keys: CKKeySet, url: URL, selection: CKDASHSelection?) {
         guard !finished else { return }
@@ -222,16 +266,19 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK8: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK9: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        if !userPaused { armWatchdog(); player.play() }
+    }
+    private func armWatchdog() {
         watchdog?.cancel()
         let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
         watchdog = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
-        player.play()
     }
     func fail(_ error: Error, stage: CKStage = .playback) {
         guard !finished else { return }
         resolutionID = UUID(); resolutionTask?.cancel(); resolutionTask = nil
+        rotationTask?.cancel(); rotationTask = nil; pendingRotation = nil
         watchdog?.cancel(); watchdog = nil; openingStream = false
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let player = layer; layer = nil; playerOptions = nil
@@ -240,14 +287,18 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         CKDiagnostic.trace(status.text ?? "playback error")
     }
     @objc func play() {
+        userPaused = false
+        if let update = pendingRotation { pendingRotation = nil; applyRotation(update); return }
         if let layer {
             if layer.state == .paused { metrics.resumedByUser() }
+            if openingStream { armWatchdog() }
             layer.play()
         } else { resolve() }
     }
-    @objc func pause() { layer?.pause() }
+    @objc func pause() { userPaused = true; watchdog?.cancel(); watchdog = nil; layer?.pause() }
     @objc func close() {
         finished = true; resolutionID = UUID(); resolutionTask?.cancel(); resolutionTask = nil; watchdog?.cancel()
+        rotationTask?.cancel(); rotationTask = nil; pendingRotation = nil
         layer?.pause(); layer?.player.shutdown(); layer?.removeFromSuperview(); layer = nil; playerOptions = nil
         UIApplication.shared.isIdleTimerDisabled = idleBefore
         dismiss(animated: true) { self.onClose?() }
@@ -269,7 +320,8 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private var lastStatusUpdate = TimeInterval(0)
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
-        status.text = "CK8: \(state.description).\n\(metrics.compact)\n\(snapshot)"
+        let renewal = keyRebuilds == 0 ? "" : " / Keys \(keyRebuilds) (new \(keyAcquisitions))"
+        status.text = "CK9: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }
