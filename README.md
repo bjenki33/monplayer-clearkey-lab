@@ -186,3 +186,6 @@ IPA and record all changed ZIP entries and hashes.
   key replacement,provider-specific expiration renewal,multiple periods or
   seamless switching. No new FairPlay/Widevine/PlayReady/CDM implementation is
   claimed. Real-provider key rotation still needs authorized physical testing.
+- Owned64-byte URL revealed an upstream6.1 DASH scratch-buffer alignment bug:
+  reserve the terminating NUL before64-byte alignment. Synthetic boundary
+  decodes cover63/64/65/127/128/129 bytes without shortening the failing URL.

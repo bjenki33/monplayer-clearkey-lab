@@ -202,6 +202,17 @@ final class CKTests: XCTestCase {
                                              protocols: "http,tcp,crypto,data", keys: [kid: key, secondKid: secondKey]))
     }
 
+    func testDASHURLAlignmentBoundariesActuallyDecodeTwoKeyVideoAndAudio() throws {
+        let prefix = "http://127.0.0.1:18761/licensed/", suffix = "/manifest.mpd"
+        for length in [63,64,65,127,128,129] {
+            let path = prefix + String(repeating: "a", count: length - prefix.utf8.count - suffix.utf8.count) + suffix
+            XCTAssertEqual(path.utf8.count, length)
+            XCTAssertTrue(try multiFixtureMatches(path, protocols: "http,tcp,crypto,data",
+                                                 keys: [kid:key,secondKid:secondKey], headers: "X-Stream:owned-stream\r\n"),
+                          "real decoder must retain video/audio at the\(length)-byte URL boundary")
+        }
+    }
+
     func testMissingMultikeyMatchDoesNotUseAnotherDefault() throws {
         let url = try XCTUnwrap(Bundle(for: CKTests.self).url(forResource: "manifest", withExtension: "mpd", subdirectory: "Fixtures/multikey"))
         let unknown = "404142434445464748494a4b4c4d4e4f"

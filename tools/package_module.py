@@ -22,7 +22,7 @@ def package(products, output):
         'FFmpeg6.1 official source SHA256:488c76e57dd9b3bee901f71d5c95eaf1db4a5a31fe46a28654e837144207c270\n'
         'Source:https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz\n'
         'Configuration:tools/build_lgpl_core.py in this bridge source repository.\n'
-        'Local LGPL modification:tools/ffmpeg_cenc_multikey.py; supplied-key MOV/DASH maps,cipher cache reset and opt-in live selection/delay/sequence-refresh/edge-wait fixes.\n'
+        'Local LGPL modification:tools/ffmpeg_cenc_multikey.py; supplied-key MOV/DASH maps,cipher cache reset,opt-in live selection/delay/sequence-refresh/edge-wait and DASH URL terminator/bounds fixes.\n'
         'This is modified FFmpeg6.1,not an unmodified upstream release.\n'
         'KSPlayer LGPL2.1 source:https://github.com/kingslay/KSPlayer/tree/3558c7645240a191c3e4672eabe7b6ae1ee4f4ae\n'
         'FFmpegKit Swift wrapper:https://github.com/kingslay/FFmpegKit/tree/6.1.0\n'

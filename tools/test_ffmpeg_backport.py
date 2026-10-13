@@ -70,6 +70,15 @@ class BackportTests(unittest.TestCase):
         self.assertIn('"ck_live_delay"', dash)
         self.assertIn('AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60', dash)
 
+    def testURLScratchAlignmentIncludesTerminatorAtEveryBoundary(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        self.assertIn('tmp_max_url_size = aligned(tmp_max_url_size + 1);', dash)
+        self.assertNotIn('tmp_max_url_size = aligned(tmp_max_url_size);', dash)
+        for length in [0, 1, 63, 64, 65, 127, 128, 129, 4096]:
+            capacity = ((length + 1 + 63) >> 6) << 6
+            self.assertGreater(capacity, length)
+            self.assertEqual(capacity % 64, 0)
+
     def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
         for kind in ['video', 'audio']:

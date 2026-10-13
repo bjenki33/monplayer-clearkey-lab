@@ -305,6 +305,14 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard layer === self.layer, !finished else { return }
+        if state == .paused {
+            userPaused = true; watchdog?.cancel(); watchdog = nil
+        } else if state.isPlaying, userPaused {
+            // The SDK's remote controls resume its layer directly,not Play here.
+            userPaused = false; metrics.resumedByUser()
+            if let update = pendingRotation { pendingRotation = nil; applyRotation(update); return }
+            if openingStream { armWatchdog() }
+        }
         if state == .bufferFinished { watchdog?.cancel(); watchdog = nil; openingStream = false }
         metrics.state(buffering: state == .buffering, playable: state == .bufferFinished,
                       now: ProcessInfo.processInfo.systemUptime)

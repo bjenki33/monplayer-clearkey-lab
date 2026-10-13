@@ -14,7 +14,7 @@ ORIGINAL = {
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
 }
-MARKER = '/* CKBridge multikey v4: supplied keys and opt-in live timeline fixes. */\n'
+MARKER = '/* CKBridge multikey v5: supplied keys, live timeline and URL bounds fixes. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -107,6 +107,10 @@ def transform(name, text):
                        '    { "decryption_keys", "Supplied media keys by KID (hex)", '
                        'OFFSET(decryption_keys), AV_OPT_TYPE_DICT, .flags = AV_OPT_FLAG_DECODING_PARAM },\n')
     elif name == 'dashdec.c':
+        # Official6.1 can allocate64bytes for a64-byte URL then copy65bytes.
+        # Account for the terminator before aligning all URL scratch buffers.
+        text = replace(text, '    tmp_max_url_size = aligned(tmp_max_url_size);\n',
+                       '    tmp_max_url_size = aligned(tmp_max_url_size + 1);\n')
         text = replace(text, '    char *cenc_decryption_key;\n',
                        '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
                        '    char *ck_video_representation;\n    int ck_live_delay;\n')

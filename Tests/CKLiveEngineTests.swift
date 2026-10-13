@@ -90,7 +90,16 @@ final class CKLiveEngineTests: XCTestCase {
 
     @MainActor
     func testPauseDuringNewLicenseDefersRebuildUntilUserResumes() async throws {
-        let session = "rotationpauseslow"
+        try await exercisePausedRenewal(session: "rotationpauseslow", remote: false)
+    }
+
+    @MainActor
+    func testSDKLayerResumeConsumesDeferredLicenseWithoutGhostPlay() async throws {
+        try await exercisePausedRenewal(session: "rotationremoteslow", remote: true)
+    }
+
+    @MainActor
+    private func exercisePausedRenewal(session: String, remote: Bool) async throws {
         let window = try XCTUnwrap(UIApplication.shared.windows.first), previous = window.rootViewController
         let controller = CKPlaybackController(channel: try CKRotationFixtures.channel(session))
         window.rootViewController = UINavigationController(rootViewController: controller)
@@ -109,7 +118,7 @@ final class CKLiveEngineTests: XCTestCase {
         try await Task.sleep(nanoseconds: 6_500_000_000)
         XCTAssertTrue(controller.layer === old); XCTAssertEqual(controller.keyRebuilds, 0)
         XCTAssertEqual(controller.layer?.state, .paused)
-        controller.play()
+        if remote { controller.layer?.play() } else { controller.play() }
         try await waitFor { controller.keyRebuilds == 1 && controller.layer?.state == .bufferFinished }
         XCTAssertFalse(controller.layer === old)
     }
