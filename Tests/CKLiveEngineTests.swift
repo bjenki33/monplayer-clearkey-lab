@@ -38,7 +38,7 @@ final class CKLiveEngineTests: XCTestCase {
         let clock = player.currentPlaybackTime
         var fingerprints: Set<UInt64> = []
         for _ in 0..<40 {
-            if let buffer = player.videoOutput?.pixelBuffer { fingerprints.insert(fingerprint(buffer)) }
+            if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { fingerprints.insert(fingerprint(buffer)) }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         print("OWNED LIVE RESULT: advance \(player.currentPlaybackTime-clock)s; distinct frames \(fingerprints.count); \(controller.metrics.summary)")
