@@ -4,10 +4,19 @@ import KSPlayer
 import Libavutil
 import UIKit
 
+enum CKPresentation {
+    static func usesNativeLinks(_ info: [String: Any]) -> Bool {
+        (info["CKNativeLinkMode"] as? Bool) == true
+    }
+    static var nativeLinks: Bool { usesNativeLinks(Bundle.main.infoDictionary ?? [:]) }
+    static var playbackLabel: String { nativeLinks ? "ClearKey" : "CK12" }
+}
+
 @objc(CKRuntime) public final class CKRuntime: NSObject {
     private static var active: CKPlaybackController?
     private static var opening = false
     private static var panelButton: UIButton?
+    static var presentedController: CKPlaybackController? { active }
     @objc(observe:source:) public static func observe(_ data: Data, source: URL?) {
         CKRegistry.shared.observe(data, source: source)
     }
@@ -42,7 +51,7 @@ import UIKit
         top.present(navigation, animated: true) { opening = false }
     }
     @objc public static func installPanel() {
-        guard panelButton == nil, let window = top()?.view.window else { return }
+        guard !CKPresentation.nativeLinks, panelButton == nil, let window = top()?.view.window else { return }
         let button = UIButton(type: .system)
         button.setTitle("CK TEST", for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 11, weight: .bold)
@@ -59,7 +68,7 @@ import UIKit
         CKDiagnostic.trace("panel installed")
     }
     @objc static func showPanel() {
-        guard active == nil, let presenter = top() else { return }
+        guard !CKPresentation.nativeLinks, active == nil, let presenter = top() else { return }
         let navigation = UINavigationController(rootViewController: CKPlaylistController())
         navigation.modalPresentationStyle = .pageSheet
         presenter.present(navigation, animated: true)
@@ -155,7 +164,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         let controls = UIStackView(); controls.axis = .vertical; controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(controls)
         status.textColor = .white; status.font = .systemFont(ofSize: 12); status.numberOfLines = 4
-        status.text = "ClearKey test: resolving provider-supplied key..."; controls.addArrangedSubview(status)
+        status.text = "ClearKey: resolving provider-supplied key..."; controls.addArrangedSubview(status)
         let buttons = UIStackView(); buttons.distribution = .fillEqually
         for (title, selector) in [("Play", #selector(play)), ("Pause", #selector(pause))] {
             let button = UIButton(type: .system); button.setTitle(title, for: .normal)
@@ -177,7 +186,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         resolutionID = UUID()
         let id = resolutionID
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = channel.license.body?.needsKeyIDs == true ? "CK12: preparing declared DASH license challenge..." : "CK12: resolving provider keys and source..."
+        status.text = channel.license.body?.needsKeyIDs == true ? "\(CKPresentation.playbackLabel): preparing declared DASH license challenge..." : "\(CKPresentation.playbackLabel): resolving provider keys and source..."
         CKDiagnostic.trace("isolated source resolution started")
         resolutionTask = Task { [weak self] in
             guard let self else { return }
@@ -273,7 +282,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK12: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "\(CKPresentation.playbackLabel): opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         if !userPaused { armWatchdog(); player.play() }
     }
     private func armWatchdog() {
@@ -336,7 +345,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let renewal = keyRebuilds == 0 ? "" : " / Keys \(keyRebuilds) (new \(keyAcquisitions))"
-        status.text = "CK12: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
+        status.text = "\(CKPresentation.playbackLabel): \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }

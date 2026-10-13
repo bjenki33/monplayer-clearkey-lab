@@ -2,10 +2,11 @@ import hashlib
 import struct
 import unittest
 import zipfile
+import plistlib
 from pathlib import Path
 import sys
 
-from patch_ipa import add_command, dylib_command, LOAD_PATH
+from patch_ipa import add_command, dylib_command, app_info, LOAD_PATH
 
 
 class PackagingTests(unittest.TestCase):
@@ -42,6 +43,21 @@ class PackagingTests(unittest.TestCase):
         altered = bytearray(self.binary)
         altered[32 + struct.unpack_from('<I', altered, 20)[0]] = 1
         with self.assertRaises(ValueError): add_command(bytes(altered), dylib_command(LOAD_PATH))
+
+    def testOfficialIdentityUsesNativeLinksAndKeepsBaseSettings(self):
+        original = {'CFBundleIdentifier':'dev.monplayer.bpfix.proxy', 'CFBundleDisplayName':'MonPlayer',
+                    'CFBundleVersion':'1', 'CFBundleShortVersionString':'1.3.20', 'nativeSetting':'retained'}
+        result = app_info(plistlib.dumps(original), '132013', official=True)
+        self.assertEqual(result['CFBundleIdentifier'], original['CFBundleIdentifier'])
+        self.assertEqual(result['CFBundleDisplayName'], 'MonPlayer')
+        self.assertEqual(result['CFBundleVersion'], '132013'); self.assertTrue(result['CKNativeLinkMode'])
+        self.assertEqual(result['nativeSetting'], 'retained')
+
+    def testExperimentalPackagingStillKeepsSeparateIdentity(self):
+        result = app_info(plistlib.dumps({'CFBundleIdentifier':'dev.monplayer.bpfix.proxy'}), '132013')
+        self.assertEqual(result['CFBundleIdentifier'], 'dev.monplayer.bpfix.proxy.cktest')
+        self.assertEqual(result['CFBundleDisplayName'], 'MonPlayer CK TEST')
+        self.assertFalse(result['CKNativeLinkMode'])
 
 
 if __name__ == '__main__':

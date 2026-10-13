@@ -9,6 +9,33 @@ import XCTest
 
 final class CKLiveEngineTests: XCTestCase {
     @MainActor
+    func testNativeImportedPlaylistAndOriginalAVPlayerRouteStartMovingStereoEngine() async throws {
+        _ = try await CKNativeFixtures.load("nativeengine", mode: "redirect")
+        let url = CKNativeFixtures.media("nativeengine")
+        XCTAssertNotNil(CKRegistry.shared.channel(url))
+        XCTAssertNil(CKRuntime.presentedController)
+        let native = AVPlayer(url: url)
+        defer { CKRuntime.presentedController?.close(); native.pause(); native.replaceCurrentItem(with: nil) }
+        try await waitFor { CKRuntime.presentedController?.metrics.playableSeconds != nil }
+        let controller = try XCTUnwrap(CKRuntime.presentedController)
+        let player = try XCTUnwrap(controller.layer?.player as? KSMEPlayer)
+        XCTAssertNotEqual((native.currentItem?.asset as? AVURLAsset)?.url, url,
+                          "original AVPlayer must use the valid placeholder while supported ClearKey is routed")
+        let clock = player.currentPlaybackTime
+        var frames: Set<UInt64> = []
+        for _ in 0..<40 {
+            if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { frames.insert(fingerprint(buffer)) }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        print("OWNED NATIVE IMPORT RESULT: advance \(player.currentPlaybackTime-clock)s; distinct frames \(frames.count)")
+        XCTAssertGreaterThan(player.currentPlaybackTime-clock, 7); XCTAssertGreaterThan(frames.count, 30)
+        XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
+        XCTAssertEqual(controller.layer?.state, .bufferFinished)
+        controller.close()
+        try await waitFor { CKRuntime.presentedController == nil }
+    }
+
+    @MainActor
     func testActualLivePlayerAdvancesClockAndRenderedMovingFrames() async throws {
         try await exerciseLivePlayer(session: "engineprogress")
     }

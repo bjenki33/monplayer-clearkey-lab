@@ -443,6 +443,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path.startswith('/native/'):
+            parts = path.split('/')
+            if len(parts) != 4 or not parts[2].isalnum() or len(parts[2]) > 64:
+                self.send_error(400); return
+            session, mode = parts[2:]
+            if mode == 'redirect':
+                self.send_response(307); self.send_header('Location', f'/native/{session}/list.m3u')
+                self.send_header('Content-Length', '0'); self.end_headers(); return
+            tags = ('#KODIPROP:inputstream.adaptive.license_type=clearkey\n'
+                    '#KODIPROP:inputstream.adaptive.license_key=000102030405060708090a0b0c0d0e0f:101112131415161718191a1b1c1d1e1f,'
+                    '202122232425262728292a2b2c2d2e2f:303132333435363738393a3b3c3d3e3f\n')
+            if mode == 'plain':
+                tags = ''
+            body = (f'#EXTM3U\n#EXTINF:-1,Owned native import\n{tags}../../live/{session}/manifest.mpd\n').encode()
+            self.send_response(403 if mode == 'denied' else 200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('X-Owned-Header', self.headers.get('X-Owned', 'none'))
+            self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
         if path.startswith('/transport/'):
             self.transport(*path.split('/')[2:4]); return
         if path.startswith('/license/'):

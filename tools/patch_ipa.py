@@ -50,7 +50,20 @@ def dylib_command(path):
     return struct.pack('<IIIIII', 0xc, size, 24, 0, 0x10000, 0x10000) + name + bytes(size - 24 - len(name))
 
 
-def package(base, module, output, report, build):
+def app_info(data, build, official=False):
+    info = plistlib.loads(data)
+    if official:
+        info['CFBundleDisplayName'] = 'MonPlayer'
+        info['CKNativeLinkMode'] = True
+    else:
+        info['CFBundleIdentifier'] += '.cktest'
+        info['CFBundleDisplayName'] = 'MonPlayer CK TEST'
+        info['CKNativeLinkMode'] = False
+    info['CFBundleVersion'] = build
+    return info
+
+
+def package(base, module, output, report, build, official=False):
     base, module, output, report = map(Path, (base, module, output, report))
     if not build.isascii() or not build.isdecimal() or int(build) <= 132002:
         raise ValueError('New experimental build must be explicitly supplied and newer than CK2')
@@ -78,10 +91,7 @@ def package(base, module, output, report, build):
             if name == app + 'MonPlayer':
                 data = add_command(data, dylib_command(LOAD_PATH)); changed.append(name)
             elif name == app + 'Info.plist':
-                info = plistlib.loads(data)
-                info['CFBundleIdentifier'] += '.cktest'
-                info['CFBundleDisplayName'] = 'MonPlayer CK TEST'
-                info['CFBundleVersion'] = build
+                info = app_info(data, build, official)
                 data = plistlib.dumps(info, fmt=plistlib.FMT_BINARY); changed.append(name)
             new.writestr(entry, data)
         for path in sorted(module.rglob('*')):
@@ -111,7 +121,8 @@ def package(base, module, output, report, build):
     result = {'base_sha256': digest, 'output_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
               'build': build, 'version': info['CFBundleShortVersionString'], 'bundle': info['CFBundleIdentifier'],
               'changed': changed, 'removed_signatures': removed, 'added': added,
-              'scope': 'unsigned experimental arm64 IPA; physical playback not established'}
+              'official_native_links': official,
+              'scope': 'unsigned arm64 integrated IPA; physical playback not established'}
     report.write_text(json.dumps(result, indent=2))
     print(json.dumps({k: v for k, v in result.items() if k not in ('removed_signatures', 'added')}, indent=2))
 
@@ -121,4 +132,5 @@ if __name__ == '__main__':
     for field in ('base', 'module', 'output', 'report'):
         parser.add_argument(field)
     parser.add_argument('--build', required=True)
+    parser.add_argument('--official', action='store_true')
     package(**vars(parser.parse_args()))

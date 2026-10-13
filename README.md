@@ -211,6 +211,24 @@ IPA and record all changed ZIP entries and hashes.
 - HTTP reference:[RFC9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2).
   All remaining roadmap items and physical acceptance are tracked separately.
 
+## Native Add-Link Integration
+
+Local `patch_ipa.py --official` preserves the normal base bundle and app name,
+and sets `CKNativeLinkMode=true`. This disables BOTH installation and opening
+of the separate experimental input panel. The original native add-link UI and
+executable sections are unchanged;the module passively observes successful
+native URL/request completions,streamed Alamofire data and downloaded playlists.
+The original callback/data/file/error still reaches its owner unchanged. Final
+response URL resolves relative streams;ordinary/failed responses are not routed.
+Supported ClearKey AVPlayer entries use the existing on-device engine/placeholder.
+No new public server/provider credentials or source are included in this repo.
+
+Owned native completion/download/redirect->registry->actual AVPlayer->moving
+stereo engine tests do NOT execute the supplied ARM64 third-party app's actual
+add-link UI. Manual physical import,relaunch/native cached-source behavior and
+provider access remain separate verification. Metadata/keys stay bounded in
+memory;there is no new raw-key persistence or universal DRM capability.
+
 ## CK11 Stage2B Fragment-Open Transport Recovery
 
 CK12 extends this with a separately opt-in `ck_fragment_resume` option for
