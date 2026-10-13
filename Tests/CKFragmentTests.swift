@@ -59,6 +59,13 @@ final class CKFragmentTests: XCTestCase {
         let stats = try await CKFragmentFixtures.stats("segmentinitbudgetslow")
         XCTAssertEqual(stats["fault_attempts"], 2)
     }
+    func testActualTricklingHeadersCannotExtendFragmentRecoveryDeadline() async throws {
+        let began = ProcessInfo.processInfo.systemUptime
+        XCTAssertLessThan(open("segmentinitbudgettrickle"), 0)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - began, 6.5)
+        let stats = try await CKFragmentFixtures.stats("segmentinitbudgettrickle")
+        XCTAssertEqual(stats["fault_attempts"], 2)
+    }
     func testSelectedLiveOptionsEnableRecoveryWithoutChangingOrdinaryDefaults() {
         XCTAssertEqual(CKLiveOptions().formatContextOptions["ck_fragment_retry"] as? Int, 1)
         let ordinary = KSOptions().formatContextOptions

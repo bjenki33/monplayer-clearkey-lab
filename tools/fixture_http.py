@@ -140,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
             stats['fault_offset_changed'] = stats.get('fault_offset_changed', 0) + int(self.headers.get('Range') != fault['range'])
             stats['fault_wrong_headers'] = stats.get('fault_wrong_headers', 0) + int(
                 self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None)
-            failed = attempt <= 2 or session.endswith(('always', 'deny', 'server', 'slow'))
+            failed = attempt <= 2 or session.endswith(('always', 'deny', 'server', 'slow', 'trickle'))
             if failed:
                 stats['fault_failures'] = stats.get('fault_failures', 0) + 1
             else:
@@ -150,6 +150,15 @@ class Handler(BaseHTTPRequestHandler):
         if session.endswith(('deny', 'server')):
             self.send_error(403 if session.endswith('deny') else 503)
         else:
+            if session.endswith('trickle') and attempt > 1:
+                try:
+                    for byte in b'HTTP/1.1 200 OK\r\nX-Owned-Trickle: ' + b'x' * 80:
+                        self.wfile.write(bytes([byte])); self.wfile.flush()
+                        time.sleep(0.3)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return True
             if session.endswith('slow') and attempt > 1:
                 time.sleep(6)
             self.close_connection = True

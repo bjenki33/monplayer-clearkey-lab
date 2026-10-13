@@ -94,6 +94,9 @@ class BackportTests(unittest.TestCase):
         self.assertNotIn('AVERROR_HTTP', recovery)
         self.assertNotIn('AVERROR(EIO)', recovery)
         self.assertIn('ff_check_interrupt(c->interrupt_callback)', recovery)
+        self.assertIn('deadline ? &interrupt : c->interrupt_callback', recovery)
+        self.assertIn('pls->ck_open_deadline = 0;', recovery)
+        self.assertIn('av_gettime_relative() >= pls->ck_open_deadline', dash)
         self.assertIn('ret = ck_open_fragment(c, pls, url, &opts);', dash)
         self.assertIn('goto end; /* Bounded route fails rather than skipping forever. */', dash)
 

@@ -115,7 +115,33 @@ def transform(name, text):
                        '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
                        '    char *ck_video_representation;\n    int ck_live_delay;\n'
                        '    int ck_fragment_retry;\n')
+        text = replace(text, '    AVIOContext *input;\n',
+                       '    AVIOContext *input;\n'
+                       '    AVIOInterruptCB ck_parent_interrupt;\n    int64_t ck_open_deadline;\n')
+        signature = ('static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,\n'
+                     '                    AVDictionary **opts, AVDictionary *opts2, int *is_http)\n')
+        text = replace(text, signature,
+                       'static int ck_open_url(AVFormatContext *s, AVIOContext **pb, const char *url,\n'
+                       '                       AVDictionary **opts, AVDictionary *opts2, int *is_http,\n'
+                       '                       const AVIOInterruptCB *interrupt)\n')
+        text = replace(text, '    ret = avio_open2(pb, url, AVIO_FLAG_READ, c->interrupt_callback, &tmp);\n',
+                       '    ret = avio_open2(pb, url, AVIO_FLAG_READ, interrupt, &tmp);\n')
+        text = replace(text, 'static char *get_content_url(xmlNodePtr *baseurl_nodes,\n',
+                       'static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,\n'
+                       '                    AVDictionary **opts, AVDictionary *opts2, int *is_http)\n'
+                       '{\n    DASHContext *c = s->priv_data;\n'
+                       '    return ck_open_url(s, pb, url, opts, opts2, is_http, c->interrupt_callback);\n}\n\n'
+                       'static char *get_content_url(xmlNodePtr *baseurl_nodes,\n')
         recovery = r'''
+/* The callback's opaque storage belongs to the representation,not the stack.
+ * Disable its open deadline before normal body reads but retain user cancel. */
+static int ck_fragment_interrupt(void *opaque)
+{
+    struct representation *pls = opaque;
+    return ff_check_interrupt(&pls->ck_parent_interrupt) ||
+           (pls->ck_open_deadline && av_gettime_relative() >= pls->ck_open_deadline);
+}
+
 /* Retry only pre-body transport failures on the same declared HTTP GET.
  * An HTTP status,certificate/format/key error or partial body is not replayed. */
 static int ck_open_fragment(DASHContext *c, struct representation *pls,
@@ -128,10 +154,15 @@ static int ck_open_fragment(DASHContext *c, struct representation *pls,
                    !av_dict_get(c->avio_opts, "post_data", NULL, 0);
     int ret, retries = 0;
     int64_t deadline = 0;
+    AVIOInterruptCB interrupt = { ck_fragment_interrupt, pls };
+    pls->ck_parent_interrupt = *c->interrupt_callback;
     for (;;) {
         if (ff_check_interrupt(c->interrupt_callback))
             return AVERROR_EXIT;
-        ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, *opts, NULL);
+        pls->ck_open_deadline = deadline;
+        ret = ck_open_url(pls->parent, &pls->input, url, &c->avio_opts, *opts, NULL,
+                          deadline ? &interrupt : c->interrupt_callback);
+        pls->ck_open_deadline = 0;
         if (ret >= 0 || !eligible || retries >= 2 ||
             !(ret == AVERROR_EOF || ret == AVERROR(ECONNRESET) ||
               ret == AVERROR(ECONNREFUSED) || ret == AVERROR(EPIPE) || ret == AVERROR(ETIMEDOUT)))
