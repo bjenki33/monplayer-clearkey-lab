@@ -14,7 +14,7 @@ ORIGINAL = {
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
 }
-MARKER = '/* CKBridge multikey v1: supplied keys only. */\n'
+MARKER = '/* CKBridge multikey v2: supplied keys and optional DASH selection. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -108,7 +108,44 @@ def transform(name, text):
                        'OFFSET(decryption_keys), AV_OPT_TYPE_DICT, .flags = AV_OPT_FLAG_DECODING_PARAM },\n')
     elif name == 'dashdec.c':
         text = replace(text, '    char *cenc_decryption_key;\n',
-                       '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n')
+                       '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
+                       '    char *ck_video_representation;\n')
+        selection = r'''
+/* Filter before component probing,including every live manifest refresh. */
+static int ck_select_video_representation(AVFormatContext *s)
+{
+    DASHContext *c = s->priv_data;
+    struct representation *selected = NULL;
+    int i, matches = 0;
+    if (!c->ck_video_representation)
+        return 0;
+    if (!*c->ck_video_representation || strlen(c->ck_video_representation) > 128)
+        return AVERROR(EINVAL);
+    for (i = 0; i < c->n_videos; i++) {
+        if (c->videos[i]->id && !strcmp(c->videos[i]->id, c->ck_video_representation)) {
+            selected = c->videos[i];
+            matches++;
+        }
+    }
+    if (matches != 1) {
+        av_log(s, AV_LOG_ERROR, "Selected DASH video is missing or ambiguous\n");
+        return AVERROR_STREAM_NOT_FOUND;
+    }
+    for (i = 0; i < c->n_videos; i++) {
+        if (c->videos[i] != selected)
+            free_representation(c->videos[i]);
+    }
+    c->videos[0] = selected;
+    c->n_videos = 1;
+    return 0;
+}
+
+'''
+        signature = 'static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)\n'
+        text = replace(text, signature, selection + signature)
+        text = replace(text, 'cleanup:\n        /*free the document */\n',
+                       '        ret = ck_select_video_representation(s);\n'
+                       'cleanup:\n        /*free the document */\n')
         forward = ('    if (c->cenc_decryption_key)\n'
                    '        av_dict_set(&in_fmt_opts, "decryption_key", c->cenc_decryption_key, 0);\n')
         text = replace(text, forward, forward +
@@ -120,6 +157,9 @@ def transform(name, text):
         text = replace(text, option, option +
                        '    { "cenc_decryption_keys", "Supplied media keys by KID (hex)", '
                        'OFFSET(cenc_decryption_keys), AV_OPT_TYPE_STRING, {.str = NULL}, '
+                       'INT_MIN, INT_MAX, .flags = FLAGS },\n'
+                       '    { "ck_video_representation", "Open only the declared DASH video ID", '
+                       'OFFSET(ck_video_representation), AV_OPT_TYPE_STRING, {.str = NULL}, '
                        'INT_MIN, INT_MAX, .flags = FLAGS },\n')
     else:
         raise RuntimeError('Unexpected patch target')

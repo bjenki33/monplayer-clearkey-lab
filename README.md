@@ -88,3 +88,19 @@ IPA and record all changed ZIP entries and hashes.
   source becomes unprotected/another DRM;HLS manifests are not channel lists.
 - Owned parser-to-two-key decode and negative/isolation regressions extend
   the existing native tests. Real user secrets never enter public tests/CI.
+
+## CK5 Live Stability Candidate
+
+- Well-described single-period live DASH with one video adaptation group can
+  select its highest declared resolution/bitrate before probing components.
+  The optional local LGPL DASH ID filter also runs on manifest refresh.
+- Audio/subtitles and source URL/template resolution are retained. Missing or
+  ambiguous selected IDs fail rather than silently changing quality or keys.
+- Selected streams avoid bitrate hopping;first playback needs1.5seconds of
+  reserve plus decoded frames,refill needs4seconds,and reserve is capped20s.
+  Other manifest shapes and ordinary-player routing retain their old options.
+- Safe monotonic stage timings and rebuffer counts aid physical comparisons.
+  Ready means the engine became playable,not an independently observed frame.
+- Owned native regressions deliberately break unused renditions and verify
+  selected video/audio still decode. No live iPhone stall-fix claim is made
+  from PC metadata,source inspection or simulator evidence alone.

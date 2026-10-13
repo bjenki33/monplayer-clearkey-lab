@@ -71,6 +71,21 @@ def main(root):
     period.append(adaptation(multi / 'video/manifest.mpd', 'video/', 0, KID1))
     period.append(adaptation(multi / 'audio/manifest.mpd', 'audio/', 1, KID2))
     manifest.write(multi / 'manifest.mpd', encoding='utf-8', xml_declaration=True)
+    variants = copy.deepcopy(manifest)
+    video_group = variants.getroot().find(f'{{{NS}}}Period/{{{NS}}}AdaptationSet')
+    selected = video_group.find(f'{{{NS}}}Representation')
+    selected.set('id', 'selected')
+    selected.set('height', '720')
+    selected.set('bandwidth', '2000000')
+    for name, height in [('unused-low', '240'), ('unused-mid', '480')]:
+        unused = copy.deepcopy(selected)
+        unused.set('id', name); unused.set('height', height)
+        unused.set('bandwidth', '500000')
+        for template in unused.findall(f'{{{NS}}}SegmentTemplate'):
+            template.set('initialization', name + '/missing-init.m4s')
+            template.set('media', name + '/missing-$Number$.m4s')
+        video_group.insert(0, unused)
+    variants.write(multi / 'variants.mpd', encoding='utf-8', xml_declaration=True)
     for directory in [root, multi / 'video', multi / 'audio']:
         assert any(b'tenc' in x.read_bytes() or b'senc' in x.read_bytes() for x in directory.glob('*.m4s')), 'fixture is not encrypted'
     assert (multi / 'audio-reference.f32').stat().st_size > 48000 * 4, 'missing owned audio reference'

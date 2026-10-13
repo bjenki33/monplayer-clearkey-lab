@@ -3,6 +3,7 @@ import Foundation
 import Libavcodec
 import Libavformat
 import Libavutil
+import KSPlayer
 import XCTest
 @testable import CKBridge
 
@@ -350,7 +351,90 @@ final class CKTests: XCTestCase {
         }
     }
 
-    private func multiFixtureMatches(_ path: String, protocols: String, keys: [String: String]) throws -> Bool {
+    func testDeclaredVideoSelectionAvoidsOpeningBrokenUnusedVariants() throws {
+        let keys = [kid: key, secondKid: secondKey]
+        let path = "http://127.0.0.1:18761/gzip/multikey/variants.mpd"
+        XCTAssertFalse(try multiFixtureMatches(path, protocols: "http,tcp,crypto,data", keys: keys))
+        XCTAssertTrue(try multiFixtureMatches(path, protocols: "http,tcp,crypto,data", keys: keys,
+                                              selection: "selected"))
+    }
+
+    func testMissingDeclaredVideoDoesNotSilentlySelectAnotherRendition() throws {
+        XCTAssertFalse(try multiFixtureMatches("http://127.0.0.1:18761/gzip/multikey/variants.mpd",
+                                               protocols: "http,tcp,crypto,data",
+                                               keys: [kid: key, secondKid: secondKey], selection: "absent"))
+    }
+
+    func liveVariants(_ items: String, periods: Int = 1, type: String = "dynamic") -> Data {
+        let period = "<Period><AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">\(items)</AdaptationSet></Period>"
+        return Data("<MPD type=\"\(type)\">\(String(repeating: period, count: periods))</MPD>".utf8)
+    }
+
+    func testLiveSelectionKeepsHighestResolutionThenBitrate() throws {
+        let items = """
+        <Representation id="low" height="480" bandwidth="1200000"/>
+        <Representation id="hd1" height="1080" bandwidth="3400000"/>
+        <Representation id="hd2" height="1080" bandwidth="5200000"/>
+        """
+        let plan = try XCTUnwrap(CKDASHSelection.plan(liveVariants(items)))
+        XCTAssertEqual(plan.id, "hd2"); XCTAssertEqual(plan.height, 1080)
+        XCTAssertEqual(plan.bandwidth, 5200000); XCTAssertEqual(plan.renditionCount, 3)
+        XCTAssertNil(CKDASHSelection.plan(liveVariants(items, type: "static")))
+        XCTAssertNil(CKDASHSelection.plan(liveVariants(items, periods: 2)))
+    }
+
+    func testLiveSelectionDeclinesAmbiguousMissingAndUnsafeIdentifiers() {
+        let good = "<Representation id=\"good\" height=\"720\" bandwidth=\"2000000\"/>"
+        for other in [good, "<Representation height=\"1080\" bandwidth=\"4000000\"/>",
+                      "<Representation id=\"bad/path\" height=\"1080\" bandwidth=\"4000000\"/>",
+                      "<Representation id=\"bad\" height=\"1080\" bandwidth=\"-1\"/>"] {
+            XCTAssertNil(CKDASHSelection.plan(liveVariants(good + other)))
+        }
+        XCTAssertNil(CKDASHSelection.plan(liveVariants(good)))
+        XCTAssertFalse(CKDASHSelection.safeID(String(repeating: "x", count: 129)))
+        XCTAssertTrue(CKDASHSelection.safeID("video=5200000:hd"))
+    }
+
+    struct Capacity: CapacityProtocol {
+        var fps: Float = 25
+        var packetCount: Int
+        var frameCount: Int = 2
+        var frameMaxCount = 4
+        var isEndOfFile = false
+        var mediaType: AVMediaType = .video
+    }
+    func testLiveStartupReserveAndRefillAreSeparateWithoutZeroBufferHack() {
+        let options = CKLiveOptions()
+        XCTAssertEqual(options.maxBufferDuration, 20); XCTAssertFalse(options.videoAdaptable)
+        XCTAssertFalse(options.isSecondOpen)
+        let reserve = [Capacity(packetCount: 38)]
+        XCTAssertTrue(options.playable(capacitys: reserve, isFirst: true, isSeek: false).isPlayable)
+        XCTAssertFalse(options.playable(capacitys: reserve, isFirst: false, isSeek: false).isPlayable)
+        XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 2)], isFirst: true, isSeek: false).isPlayable)
+        XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 100, frameCount: 0)], isFirst: true, isSeek: false).isPlayable)
+        XCTAssertTrue(options.playable(capacitys: [Capacity(packetCount: 105)], isFirst: false, isSeek: false).isPlayable)
+    }
+
+    func testPlaybackMetricsDoNotCountInitialBufferOrDuplicateStatesAsStalls() {
+        var metrics = CKPlaybackMetrics(now: 100)
+        metrics.state(buffering: true, playable: false, now: 101)
+        metrics.state(buffering: true, playable: false, now: 102)
+        XCTAssertEqual(metrics.rebufferCount, 0)
+        metrics.state(buffering: false, playable: true, now: 103)
+        metrics.state(buffering: true, playable: false, now: 104)
+        metrics.state(buffering: true, playable: false, now: 105)
+        XCTAssertEqual(metrics.rebufferCount, 1); XCTAssertEqual(metrics.playableSeconds, 3)
+        metrics.state(buffering: false, playable: true, now: 106)
+        XCTAssertEqual(metrics.playableSeconds, 3)
+        XCTAssertTrue(metrics.summary.contains("Ready 3.0s"))
+        metrics.state(buffering: false, playable: false, now: 107)
+        metrics.resumedByUser()
+        metrics.state(buffering: true, playable: false, now: 108)
+        XCTAssertEqual(metrics.rebufferCount, 1, "manual pause/resume is not a network stall")
+    }
+
+    private func multiFixtureMatches(_ path: String, protocols: String, keys: [String: String],
+                                     selection: String? = nil) throws -> Bool {
         let goldenURL = try XCTUnwrap(Bundle(for: CKTests.self).url(forResource: "audio-reference", withExtension: "f32", subdirectory: "Fixtures/multikey"))
         let bytes = [UInt8](try Data(contentsOf: goldenURL))
         let golden: [Float] = stride(from: 0, to: bytes.count - 3, by: 4).map {
@@ -360,8 +444,13 @@ final class CKTests: XCTestCase {
         try CKKeySet(keys).formatOptions.forEach { av_dict_set(&options, $0.key, $0.value, 0) }
         av_dict_set(&options, "protocol_whitelist", protocols, 0)
         av_dict_set(&options, "rw_timeout", "10000000", 0)
+        if let selection { av_dict_set(&options, "ck_video_representation", selection, 0) }
         let opened = avformat_open_input(&context, path, nil, &options)
         if opened == 0 { XCTAssertNil(av_dict_get(options, "cenc_decryption_keys", nil, 0), "compiled DASH engine must consume the map option") }
+        if opened == 0, selection != nil {
+            XCTAssertNil(av_dict_get(options, "ck_video_representation", nil, 0))
+            XCTAssertEqual(context?.pointee.nb_streams, 2, "selected video and original audio only")
+        }
         av_dict_free(&options)
         guard opened == 0, let context else { return false }
         var toClose: UnsafeMutablePointer<AVFormatContext>? = context

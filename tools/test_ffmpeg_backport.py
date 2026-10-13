@@ -54,6 +54,16 @@ class BackportTests(unittest.TestCase):
         self.assertIn('sc->cenc.aes_ctr = NULL;', mov)
         self.assertIn('"No valid supplied key for encrypted sample', mov)
 
+    def testDashSelectionRunsInsideManifestParserBeforeComponentOpen(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        start = dash.index('static int parse_manifest(AVFormatContext')
+        end = dash.index('static int64_t calc_cur_seg_no(', start)
+        self.assertIn('ret = ck_select_video_representation(s);', dash[start:end])
+        self.assertIn('"ck_video_representation"', dash)
+        self.assertIn('matches != 1', dash)
+        self.assertIn('free_representation(c->videos[i])', dash)
+        self.assertLess(dash.index('ck_select_video_representation(s);', start), dash.index('static int dash_read_header('))
+
 
 if __name__ == '__main__':
     unittest.main()
