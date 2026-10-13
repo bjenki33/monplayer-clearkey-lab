@@ -44,16 +44,24 @@ final class CKLiveEngineTests: XCTestCase {
         defer { controller.close(); window.rootViewController = previous }
         let began = ProcessInfo.processInfo.systemUptime
         var snapshot = ""
-        while ProcessInfo.processInfo.systemUptime - began < 12 {
+        // Cold Simulator network/audio setup is not the buffer-starvation
+        // assertion. Keep its wait below the unchanged30s engine watchdog.
+        while ProcessInfo.processInfo.systemUptime - began < 24 {
             snapshot = (controller.playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
             if let packets = snapshot.split(separator: " ").first(where: { $0.hasPrefix("p") }),
-               let count = Int(packets.dropFirst()), count > 100, snapshot.contains("fps600") { break }
+               let count = Int(packets.dropFirst()), count > 100,
+               let frames = snapshot.split(separator: " ").first(where: { $0.hasPrefix("f") && $0.contains("/") }),
+               let decoded = Int(frames.dropFirst().split(separator: "/")[0]), decoded >= 2,
+               snapshot.contains("fps600") { break }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         print("OWNED INFLATED LEGACY BLOCKED: \(snapshot); \(controller.metrics.summary)")
         XCTAssertTrue(snapshot.contains("fps600"), "actual legacy engine must exercise the600fps queue")
         let packets = snapshot.split(separator: " ").first(where: { $0.hasPrefix("p") }).flatMap { Int($0.dropFirst()) } ?? 0
         XCTAssertGreaterThan(packets, 100, "legacy stall must have real compressed video data,not a network failure")
+        let frames = snapshot.split(separator: " ").first(where: { $0.hasPrefix("f") && $0.contains("/") })
+            .flatMap { Int($0.dropFirst().split(separator: "/")[0]) } ?? 0
+        XCTAssertGreaterThanOrEqual(frames, 2, "negative control must also have decoded video,not just unread packets")
         XCTAssertNil(controller.metrics.playableSeconds, "inflated FPS must reproduce the startup gate failure")
     }
 
