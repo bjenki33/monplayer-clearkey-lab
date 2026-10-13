@@ -103,11 +103,13 @@ jobs:
             sleep 1
           done
           curl -sf http://127.0.0.1:18761/health >/dev/null
+          sanitizer=NO
+          if [[ "$OWNED_ASAN" == "true" ]]; then sanitizer=YES; fi
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
           xcodebuild -project CKBridge.xcodeproj -scheme CKHost -configuration Debug \
             -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build/simulator \
             -clonedSourcePackagesDirPath build/packages \
-            -resultBundlePath build/CKTests.xcresult -enableAddressSanitizer "${OWNED_ASAN:-false}" CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath build/CKTests.xcresult -enableAddressSanitizer "$sanitizer" CODE_SIGNING_ALLOWED=NO \
             test 2>&1 | tee build/native-tests.log
       - name: Export owned test failures without private data
         if: always()
