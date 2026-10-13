@@ -177,7 +177,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         resolutionID = UUID()
         let id = resolutionID
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = channel.license.body?.needsKeyIDs == true ? "CK11: preparing declared DASH license challenge..." : "CK11: resolving provider keys and source..."
+        status.text = channel.license.body?.needsKeyIDs == true ? "CK12: preparing declared DASH license challenge..." : "CK12: resolving provider keys and source..."
         CKDiagnostic.trace("isolated source resolution started")
         resolutionTask = Task { [weak self] in
             guard let self else { return }
@@ -273,7 +273,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK11: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK12: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         if !userPaused { armWatchdog(); player.play() }
     }
     private func armWatchdog() {
@@ -336,7 +336,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let renewal = keyRebuilds == 0 ? "" : " / Keys \(keyRebuilds) (new \(keyAcquisitions))"
-        status.text = "CK11: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
+        status.text = "CK12: \(state.description).\n\(metrics.compact)\(renewal)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }

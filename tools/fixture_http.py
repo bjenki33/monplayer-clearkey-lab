@@ -5,6 +5,7 @@ import json
 import base64
 import re
 import socket
+import hashlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -119,6 +120,93 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def body_fault(self, session, media, body):
+        if not session.startswith('body') or not re.fullmatch(r'video/chunk-stream0-\d+\.m4s', media):
+            return False
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        with SESSION_LOCK:
+            state = SESSIONS[session]
+            fault = state.setdefault('fault', {'armed': session.startswith('bodyinitial'),
+                                               'target': None, 'attempts': 0})
+            if not fault['armed']:
+                return False
+            if fault['target'] is None:
+                fault['target'] = media
+                fault['delivered'] = 0
+            if media != fault['target']:
+                return False
+            fault['attempts'] += 1
+            attempt = fault['attempts']
+            stats = state['ages']
+            stats['body_attempts'] = attempt
+            stats['body_wrong_headers'] = stats.get('body_wrong_headers', 0) + int(
+                self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None)
+            match = re.fullmatch(r'bytes=(\d+)-(\d*)', self.headers.get('Range', ''))
+            offset = int(match.group(1)) if match else 0
+            if attempt > 1:
+                wrong = not match or offset != fault['delivered'] or int(match.group(2) or len(body)-1) != len(body)-1
+                stats['body_wrong_offset'] = stats.get('body_wrong_offset', 0) + int(wrong)
+                stats['body_wrong_validator'] = stats.get('body_wrong_validator', 0) + int(self.headers.get('If-Range') != etag)
+                stats['body_positive_offsets'] = stats.get('body_positive_offsets', 0) + int(offset > 0)
+            else:
+                stats['body_initial_range'] = int(match is not None or self.headers.get('If-Range') is not None)
+            cut = attempt <= 2 or session.endswith(('always', 'slow', 'trickle'))
+            stats['body_cuts'] = stats.get('body_cuts', 0) + int(cut)
+            stats['body_successes'] = stats.get('body_successes', 0) + int(not cut)
+        if attempt > 1 and session.endswith('slow'):
+            time.sleep(6)
+        if attempt > 1 and session.endswith('deny'):
+            self.send_error(403); return True
+        code = 206 if match else 200
+        if attempt > 1 and session.endswith('ignored'):
+            code, offset = 200, 0
+        headers = {'ETag': etag, 'Content-Length': str(len(body)-offset)}
+        if match and code == 206:
+            start = offset + int(session.endswith('wrongstart'))
+            total = len(body) + int(session.endswith('wrongtotal'))
+            end = len(body)-1-int(session.endswith('wrongend'))
+            headers['Content-Range'] = f'bytes {start}-{end}/{total}'
+            if session.endswith('overflow'):
+                headers['Content-Range'] = f'bytes {start}-{end}/999999999999999999999999999999999999'
+        if session.endswith('weak'):
+            headers['ETag'] = 'W/' + etag
+        if session.endswith('missing'):
+            headers.pop('ETag')
+        if session.endswith('unknown'):
+            headers.pop('Content-Length')
+        if session.endswith('encoded'):
+            headers['Content-Encoding'] = 'owned-unsupported'
+        if attempt > 1 and session.endswith('changed'):
+            headers['ETag'] = '"owned-changed"'
+        if attempt > 1 and session.endswith('wronglength'):
+            headers['Content-Length'] = str(len(body)-offset+1)
+        remaining = body[offset:]
+        payload = remaining[:max(1, len(remaining)//2)] if cut else remaining
+        with SESSION_LOCK:
+            fault['delivered'] = offset + len(payload)
+            stats['body_total'] = len(body)
+            stats['body_delivered'] = fault['delivered']
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', 'video/iso.segment')
+            self.send_header('Connection', 'close')
+            for key, value in headers.items():
+                self.send_header(key, value)
+            if attempt > 1 and session.endswith('duplicate'):
+                self.send_header('ETag', etag)
+            self.end_headers()
+            if attempt > 1 and session.endswith('trickle'):
+                for byte in payload:
+                    self.wfile.write(bytes([byte])); self.wfile.flush(); time.sleep(0.3)
+            else:
+                self.wfile.write(payload); self.wfile.flush()
+            if cut:
+                self.connection.shutdown(socket.SHUT_RDWR)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        self.close_connection = True
+        return True
+
     def fragment_fault(self, session, media):
         if not session.startswith('segment'):
             return False
@@ -387,7 +475,7 @@ class Handler(BaseHTTPRequestHandler):
                         state['failures'] += 1
                 if failed:
                     self.send_error(503); return
-            if session.startswith(('licensed', 'rotation', 'segment')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+            if session.startswith(('licensed', 'rotation', 'segment', 'body')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                 self.send_error(403); return
             if not session.isalnum() or len(session) > 64:
                 self.send_error(400); return
@@ -402,11 +490,12 @@ class Handler(BaseHTTPRequestHandler):
             allowed = True
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
-                if session.startswith(('licensed', 'rotation', 'segment')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+                if session.startswith(('licensed', 'rotation', 'segment', 'body')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                     self.send_error(403); return
                 allowed = live_segment(session, media)
                 if allowed and self.fragment_fault(session, media):
                     return
+                requested_media = media
                 match = re.fullmatch(r'(video|audio|rotatedvideo)/chunk-stream0-(\d+)\.m4s', media)
                 if match:
                     media = f'{match.group(1)}/chunk-stream0-{int(match.group(2))-SEQUENCE_BASE:05d}.m4s'
@@ -418,6 +507,8 @@ class Handler(BaseHTTPRequestHandler):
                 body, code, kind, encoding = b'missing fixture', 404, 'text/plain', None
             else:
                 body, code = target.read_bytes(), 200
+                if path.startswith('/live/') and self.body_fault(session, requested_media, body):
+                    return
                 kind = 'application/dash+xml' if target.suffix == '.mpd' else 'video/iso.segment'
                 encoding = 'gzip' if path.startswith('/gzip/') and target.suffix == '.mpd' else None
                 if encoding:

@@ -13,8 +13,9 @@ ORIGINAL = {
     'isom.h': '182d718cbd56f8d38f4f0f03b506b5c621e085ffee7664857aebc12161050ee3',
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
+    'http.c': 'e62e932c53dbed1e7f32b0b4e9c233b61e8bb68e92489bcabe3a445f736aa96e',
 }
-MARKER = '/* CKBridge multikey v6: supplied keys, live timeline, URL bounds and fragment recovery. */\n'
+MARKER = '/* CKBridge multikey v7: supplied keys, live timeline, URL bounds and validated fragment resume. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -74,6 +75,177 @@ def replace(text, before, after, count=1):
     return text.replace(before, after)
 
 
+BODY_RESUME = r'''
+/* Exported metadata describes this response,not a previous redirect/connection.
+ * Reject ambiguous validators and numbers instead of repairing provider data. */
+static int ck_response_string(AVIOContext *input, const char *name, char **out)
+{
+    return av_opt_get(input, name, AV_OPT_SEARCH_CHILDREN, (uint8_t **)out);
+}
+
+static int64_t ck_response_length(AVIOContext *input)
+{
+    char *value = NULL;
+    int64_t length = 0;
+    const unsigned char *p;
+    if (ck_response_string(input, "ck_content_length", &value) < 0 || !value || !*value)
+        goto invalid;
+    for (p = (const unsigned char *)value; *p; p++) {
+        if (*p < '0' || *p > '9' || length > (INT64_MAX - (*p - '0')) / 10)
+            goto invalid;
+        length = length * 10 + *p - '0';
+    }
+    av_free(value);
+    return length;
+invalid:
+    av_free(value);
+    return -1;
+}
+
+static int ck_identity_response(AVIOContext *input)
+{
+    char *encoding = NULL, *transfer = NULL;
+    int valid = ck_response_string(input, "ck_content_encoding", &encoding) >= 0 &&
+                ck_response_string(input, "ck_transfer_encoding", &transfer) >= 0 &&
+                (!encoding || !*encoding || !av_strcasecmp(encoding, "identity")) &&
+                (!transfer || !*transfer);
+    av_free(encoding);
+    av_free(transfer);
+    return valid;
+}
+
+static int ck_strong_etag(const char *tag)
+{
+    size_t i, n = tag ? strlen(tag) : 0;
+    if (n < 2 || n > 256 || tag[0] != '"' || tag[n - 1] != '"')
+        return 0;
+    for (i = 1; i + 1 < n; i++)
+        if ((unsigned char)tag[i] < 0x21 || tag[i] == '"' || (unsigned char)tag[i] > 0x7e)
+            return 0;
+    return 1;
+}
+
+static int ck_range_number(const char **cursor, int64_t *value)
+{
+    const char *p = *cursor;
+    *value = 0;
+    if (*p < '0' || *p > '9')
+        return 0;
+    do {
+        if (*value > (INT64_MAX - (*p - '0')) / 10)
+            return 0;
+        *value = *value * 10 + *p++ - '0';
+    } while (*p >= '0' && *p <= '9');
+    *cursor = p;
+    return 1;
+}
+
+static void ck_capture_body(struct representation *pls, const char *url)
+{
+    char *tag = NULL, *range = NULL;
+    int64_t status = 0, length = ck_response_length(pls->input);
+    /* Known length also detects an incomplete body when no safe validator exists. */
+    if (!ck_identity_response(pls->input) || length <= 0)
+        return;
+    pls->ck_body_total = length;
+    if (av_opt_get_int(pls->input, "ck_http_status", AV_OPT_SEARCH_CHILDREN, &status) < 0 || status != 200)
+        return;
+    if (ck_response_string(pls->input, "ck_content_range", &range) < 0 || (range && *range))
+        goto end;
+    if (ck_response_string(pls->input, "ck_etag", &tag) < 0 || !ck_strong_etag(tag))
+        goto end;
+    pls->ck_body_url = av_strdup(url);
+    if (pls->ck_body_url)
+        av_strlcpy(pls->ck_body_etag, tag, sizeof(pls->ck_body_etag));
+end:
+    av_free(tag);
+    av_free(range);
+}
+
+static int ck_validate_resume(struct representation *pls)
+{
+    char *tag = NULL, *range = NULL;
+    const char *cursor;
+    int64_t status = 0, start = -1, end = -1, total = -1;
+    int valid = 0;
+    if (av_opt_get_int(pls->input, "ck_http_status", AV_OPT_SEARCH_CHILDREN, &status) < 0 ||
+        status != 206 || !ck_identity_response(pls->input) ||
+        ck_response_length(pls->input) != pls->ck_body_total - pls->cur_seg_offset)
+        goto done;
+    if (ck_response_string(pls->input, "ck_etag", &tag) < 0 || !tag ||
+        strcmp(tag, pls->ck_body_etag) || !ck_strong_etag(tag))
+        goto done;
+    if (ck_response_string(pls->input, "ck_content_range", &range) < 0 || !range ||
+        !av_strstart(range, "bytes ", &cursor) ||
+        !ck_range_number(&cursor, &start) || *cursor++ != '-' ||
+        !ck_range_number(&cursor, &end) || *cursor++ != '/' ||
+        !ck_range_number(&cursor, &total) || *cursor || start != pls->cur_seg_offset ||
+        end != pls->ck_body_total - 1 || total != pls->ck_body_total)
+        goto done;
+    valid = 1;
+done:
+    av_free(tag);
+    av_free(range);
+    return valid;
+}
+
+/* Resume from bytes delivered to the demuxer,not HTTP/AVIO read-ahead. Retain
+ * the parent cancel callback and ONE per-fragment budget across repeated cuts. */
+static int ck_resume_body(DASHContext *c, struct representation *pls)
+{
+    AVIOInterruptCB interrupt = { ck_fragment_interrupt, pls };
+    const AVDictionaryEntry *entry = av_dict_get(c->avio_opts, "headers", NULL, 0);
+    AVDictionary *opts = NULL;
+    char *headers = NULL;
+    int ret = AVERROR(EIO);
+    int64_t remaining;
+    if (!pls->ck_body_url || pls->cur_seg_offset <= 0 || pls->ck_body_retries >= 2)
+        return ret;
+    if (!pls->ck_body_deadline)
+        pls->ck_body_deadline = av_gettime_relative() + 5 * AV_TIME_BASE;
+    remaining = pls->ck_body_deadline - av_gettime_relative();
+    if (remaining <= 0 || ff_check_interrupt(c->interrupt_callback))
+        return ff_check_interrupt(c->interrupt_callback) ? AVERROR_EXIT : ret;
+    headers = av_asprintf("%s%sIf-Range: %s\r\n", entry ? entry->value : "",
+                           entry && *entry->value && entry->value[strlen(entry->value)-1] != '\n' ? "\r\n" : "",
+                           pls->ck_body_etag);
+    if (!headers)
+        return AVERROR(ENOMEM);
+    if (av_dict_set(&opts, "headers", headers, 0) < 0 ||
+        av_dict_set_int(&opts, "offset", pls->cur_seg_offset, 0) < 0 ||
+        av_dict_set_int(&opts, "end_offset", pls->ck_body_total, 0) < 0 ||
+        av_dict_set_int(&opts, "rw_timeout", remaining, 0) < 0 ||
+        av_dict_set_int(&opts, "timeout", remaining, 0) < 0 ||
+        av_dict_set(&opts, "ck_export_headers", "1", 0) < 0 ||
+        av_dict_set(&opts, "reconnect", "0", 0) < 0 ||
+        av_dict_set(&opts, "reconnect_at_eof", "0", 0) < 0 ||
+        av_dict_set(&opts, "reconnect_on_network_error", "0", 0) < 0 ||
+        av_dict_set(&opts, "reconnect_on_http_error", "", 0) < 0 ||
+        av_dict_set(&opts, "multiple_requests", "0", 0) < 0) {
+        ret = AVERROR(ENOMEM);
+        goto done;
+    }
+    ff_format_io_close(pls->parent, &pls->input);
+    pls->ck_body_retries++;
+    pls->ck_parent_interrupt = *c->interrupt_callback;
+    pls->ck_open_deadline = pls->ck_body_deadline;
+    ret = ck_open_url(pls->parent, &pls->input, pls->ck_body_url, &c->avio_opts, opts, NULL, &interrupt);
+    if (ret >= 0 && !ck_validate_resume(pls))
+        ret = AVERROR_INVALIDDATA;
+    /* A valid resumed body keeps the deadline until it finishes;trickling
+     * bytes cannot extend recovery indefinitely. Original bodies do not. */
+    if (ret < 0) {
+        pls->ck_open_deadline = 0;
+        ff_format_io_close(pls->parent, &pls->input);
+    }
+done:
+    av_free(headers);
+    av_dict_free(&opts);
+    return ret;
+}
+'''
+
+
 def transform(name, text):
     if name == 'isom.h':
         text = replace(text, '        struct AVAES *aes_ctx;\n',
@@ -114,11 +286,15 @@ def transform(name, text):
         text = replace(text, '    char *cenc_decryption_key;\n',
                        '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
                        '    char *ck_video_representation;\n    int ck_live_delay;\n'
-                       '    int ck_fragment_retry;\n')
+                       '    int ck_fragment_retry;\n    int ck_fragment_resume;\n')
         text = replace(text, '    AVIOContext *input;\n',
                        '    AVIOContext *input;\n'
                        '    AVIOInterruptCB ck_parent_interrupt;\n    int64_t ck_open_deadline;\n'
-                       '    int ck_fragment_error;\n')
+                       '    int ck_fragment_error;\n'
+                       '    char *ck_body_url;\n    char ck_body_etag[257];\n'
+                       '    int64_t ck_body_total, ck_body_deadline;\n    int ck_body_retries;\n')
+        text = replace(text, '    av_freep(&pls->url_template);\n',
+                       '    av_freep(&pls->ck_body_url);\n    av_freep(&pls->url_template);\n')
         signature = ('static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,\n'
                      '                    AVDictionary **opts, AVDictionary *opts2, int *is_http)\n')
         text = replace(text, signature,
@@ -194,15 +370,83 @@ static int ck_open_fragment(DASHContext *c, struct representation *pls,
 
 '''
         signature = 'static int open_input(DASHContext *c, struct representation *pls, struct fragment *seg)\n'
-        text = replace(text, signature, recovery + signature)
+        text = replace(text, signature, recovery + BODY_RESUME + signature)
+        signature = 'static int read_from_url(struct representation *pls, struct fragment *seg,\n'
+        text = replace(text, signature,
+                       'static int ck_resume_body(DASHContext *c, struct representation *pls);\n\n' + signature)
+        before = '    ret = avio_read(pls->input, buf, buf_size);\n    if (ret > 0)\n        pls->cur_seg_offset += ret;\n'
+        after = r'''
+    DASHContext *c = pls->parent->priv_data;
+    ret = avio_read(pls->input, buf, buf_size);
+    if (c->ck_fragment_resume && pls->ck_body_total > 0) {
+        while (ret <= 0 && pls->cur_seg_offset < pls->ck_body_total) {
+            if (!(ret == 0 || ret == AVERROR_EOF || ret == AVERROR(EIO) ||
+                  ret == AVERROR(ECONNRESET) || ret == AVERROR(ECONNREFUSED) ||
+                  ret == AVERROR(EPIPE) || ret == AVERROR(ETIMEDOUT)))
+                break;
+            ret = ck_resume_body(c, pls);
+            if (ret < 0) {
+                if (pls->ck_body_url && pls->ck_body_retries < 2 &&
+                    (ret == AVERROR_EOF || ret == AVERROR(ECONNRESET) ||
+                     ret == AVERROR(ECONNREFUSED) || ret == AVERROR(EPIPE) || ret == AVERROR(ETIMEDOUT)))
+                    continue;
+                break;
+            }
+            ret = avio_read(pls->input, buf, buf_size);
+        }
+        if (ret <= 0 && pls->cur_seg_offset < pls->ck_body_total) {
+            pls->ck_fragment_error = ret < 0 ? ret : AVERROR(EIO);
+            return pls->ck_fragment_error;
+        }
+    }
+    if (ret > 0) {
+        pls->cur_seg_offset += ret;
+        if (pls->ck_body_total && pls->cur_seg_offset == pls->ck_body_total)
+            pls->ck_open_deadline = 0;
+    }
+'''
+        text = replace(text, before, after)
+        before = '    ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);\n'
+        after = before + r'''
+    av_freep(&pls->ck_body_url);
+    pls->ck_body_etag[0] = 0;
+    pls->ck_body_total = pls->ck_body_deadline = pls->ck_body_retries = 0;
+    if (c->ck_fragment_resume && c->is_live && seg != pls->init_section &&
+        seg->size < 0 && seg->url_offset == 0 &&
+        (av_strstart(url, "http://", NULL) || av_strstart(url, "https://", NULL)) &&
+        !av_dict_get(c->avio_opts, "post_data", NULL, 0)) {
+        const AVDictionaryEntry *method = av_dict_get(c->avio_opts, "method", NULL, 0);
+        const AVDictionaryEntry *headers = av_dict_get(c->avio_opts, "headers", NULL, 0);
+        if ((!method || !strcmp(method->value, "GET")) &&
+            (!headers || !av_stristr(headers->value, "range:"))) {
+            /* Integration owns bounded replay;disable opaque SDK reconnect. */
+            av_dict_set(&opts, "ck_export_headers", "1", 0);
+            av_dict_set(&opts, "seekable", "0", 0);
+            av_dict_set(&opts, "reconnect", "0", 0);
+            av_dict_set(&opts, "reconnect_at_eof", "0", 0);
+            av_dict_set(&opts, "reconnect_on_network_error", "0", 0);
+            av_dict_set(&opts, "reconnect_on_http_error", "", 0);
+            av_dict_set(&opts, "multiple_requests", "0", 0);
+        }
+    }
+'''
+        text = replace(text, before, after)
         text = replace(text, '    ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);\n',
                        '    ret = ck_open_fragment(c, pls, url, &opts);\n'
+                       '    if (ret >= 0 && av_dict_get(opts, "ck_export_headers", NULL, 0))\n'
+                       '        ck_capture_body(pls, url);\n'
                        '    if (ret < 0 && c->ck_fragment_retry)\n'
                        '        pls->ck_fragment_error = ret;\n')
         text = replace(text, '    DASHContext *c = v->parent->priv_data;\n\nrestart:\n',
                        '    DASHContext *c = v->parent->priv_data;\n\n'
-                       '    if (c->ck_fragment_retry && v->ck_fragment_error < 0)\n'
+                       '    if ((c->ck_fragment_retry || c->ck_fragment_resume) && v->ck_fragment_error < 0)\n'
                        '        return v->ck_fragment_error;\n\nrestart:\n')
+        text = replace(text, '    ret = read_from_url(v, v->cur_seg, buf, buf_size);\n    if (ret > 0)\n',
+                       '    ret = read_from_url(v, v->cur_seg, buf, buf_size);\n'
+                       '    if (c->ck_fragment_resume && c->is_live && ret < 0 && ret != AVERROR_EOF) {\n'
+                       '        v->ck_fragment_error = ret;\n        goto end;\n    }\n'
+                       '    if (v->ck_fragment_error < 0)\n        goto end;\n'
+                       '    if (ret > 0)\n')
         text = replace(text, '            av_log(v->parent, AV_LOG_WARNING, "Failed to open fragment of playlist\\n");\n',
                        '            if (c->ck_fragment_retry)\n'
                        '                goto end; /* Bounded route fails rather than skipping forever. */\n'
@@ -312,7 +556,54 @@ static int ck_select_video_representation(AVFormatContext *s)
                        '    { "ck_live_delay", "Opt-in live timeline delay in seconds", '
                        'OFFSET(ck_live_delay), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60, .flags = FLAGS },\n'
                        '    { "ck_fragment_retry", "Opt-in bounded pre-body fragment transport recovery", '
-                       'OFFSET(ck_fragment_retry), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = FLAGS },\n')
+                       'OFFSET(ck_fragment_retry), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = FLAGS },\n'
+                       '    { "ck_fragment_resume", "Opt-in validated whole media body resume", '
+                       'OFFSET(ck_fragment_resume), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = FLAGS },\n')
+    elif name == 'http.c':
+        text = replace(text, '    int http_code;\n',
+                       '    int http_code;\n    int ck_export_headers;\n'
+                       '    char *ck_etag, *ck_content_range, *ck_content_length;\n'
+                       '    char *ck_content_encoding, *ck_transfer_encoding;\n')
+        option = 'static const AVOption options[] = {\n'
+        exports = ('    { "ck_export_headers", "Opt-in bounded response metadata", '
+                   'OFFSET(ck_export_headers), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, D },\n'
+                   '    { "ck_http_status", "Response status", OFFSET(http_code), AV_OPT_TYPE_INT, '
+                   '{.i64 = 0}, 0, 599, AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },\n')
+        for field in ['ck_etag', 'ck_content_range', 'ck_content_length', 'ck_content_encoding', 'ck_transfer_encoding']:
+            exports += (f'    {{ "{field}", "Response metadata", OFFSET({field}), AV_OPT_TYPE_STRING, '
+                        '{.str = NULL}, 0, 0, AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },\n')
+        text = replace(text, option, option + exports)
+        signature = 'static int process_line(URLContext *h, char *line, int line_count)\n'
+        capture = r'''
+static int ck_capture_header(HTTPContext *s, const char *name, const char *value)
+{
+    char **target = NULL;
+    if (!s->ck_export_headers)
+        return 0;
+    if (!av_strcasecmp(name, "ETag")) target = &s->ck_etag;
+    else if (!av_strcasecmp(name, "Content-Range")) target = &s->ck_content_range;
+    else if (!av_strcasecmp(name, "Content-Length")) target = &s->ck_content_length;
+    else if (!av_strcasecmp(name, "Content-Encoding")) target = &s->ck_content_encoding;
+    else if (!av_strcasecmp(name, "Transfer-Encoding")) target = &s->ck_transfer_encoding;
+    if (!target)
+        return 0;
+    if (*target || strlen(value) > 512)
+        return AVERROR_INVALIDDATA;
+    *target = av_strdup(value);
+    return *target ? 0 : AVERROR(ENOMEM);
+}
+
+'''
+        text = replace(text, signature, capture + signature)
+        before = '        if (!av_strcasecmp(tag, "Location")) {\n'
+        text = replace(text, before,
+                       '        if ((ret = ck_capture_header(s, tag, p)) < 0)\n            return ret;\n' + before)
+        reset = ''.join(f'    av_freep(&s->{field});\n' for field in
+                        ['ck_etag', 'ck_content_range', 'ck_content_length', 'ck_content_encoding', 'ck_transfer_encoding'])
+        text = replace(text, '    s->filesize_from_content_range = UINT64_MAX;\n',
+                       '    s->filesize_from_content_range = UINT64_MAX;\n' + reset)
+        text = replace(text, '    av_freep(&s->uri);\n    return ret;\n',
+                       '    av_freep(&s->uri);\n' + reset + '    return ret;\n')
     else:
         raise RuntimeError('Unexpected patch target')
     return MARKER + text

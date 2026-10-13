@@ -213,6 +213,21 @@ IPA and record all changed ZIP entries and hashes.
 
 ## CK11 Stage2B Fragment-Open Transport Recovery
 
+CK12 extends this with a separately opt-in `ck_fragment_resume` option for
+selected live DASH whole-resource GET media bodies. Only identity bodies with
+known Content-Length and a strong ETag may resume after a partial read. The
+same URL/stream headers use Range and If-Range from the bytes actually consumed,
+not AVIO read-ahead. Before passing resumed bytes,the core verifies206,status,
+exact Content-Range/remaining length,and the same strong ETag. At most two extra
+requests share one interruptible five-second recovery budget per fragment.
+Selected media disables opaque SDK reconnect so it cannot bypass this check.
+Changed/ignored/malformed/ambiguous responses fail closed;no license replay or
+decoder rebuild. Exported HTTP metadata is bounded,default-off and reset for
+each response;public ABI is unchanged. Init/body range/unknown encoding or
+length/weak validators are NOT covered. HTTP statuses,CDN credential policy,
+provider key renewal,physical network interruption and universal DRM remain
+separate open work. Owned native tests are not physical-provider proof.
+
 - Only the selected live DASH route enablesck_fragment_retry(default0 in core).
   HTTP(S) GET fragment/init opens retry pre-body EOF/reset/refused/pipe/timeout
   errors with at most2extra attempts and one5s recovery budget after the normal

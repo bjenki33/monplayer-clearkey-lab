@@ -82,7 +82,7 @@ class BackportTests(unittest.TestCase):
     def testFragmentRecoveryIsOptInBoundedGETTransportOnlyAndInterruptible(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
         start = dash.index('static int ck_open_fragment(')
-        end = dash.index('static int open_input(', start)
+        end = dash.index('static int ck_response_string(', start)
         recovery = dash[start:end]
         self.assertIn('AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1', dash)
         self.assertIn('retries >= 2', recovery)
@@ -101,6 +101,28 @@ class BackportTests(unittest.TestCase):
         self.assertIn('goto end; /* Bounded route fails rather than skipping forever. */', dash)
         self.assertIn('return v->ck_fragment_error;', dash)
         self.assertIn('pls->ck_fragment_error = ret;', dash)
+
+    def testBodyResumeValidatesEntityBeforeDeliveringAndSharesOneBudget(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        self.assertIn('status != 206', dash)
+        self.assertIn('start != pls->cur_seg_offset', dash)
+        self.assertIn('total != pls->ck_body_total', dash)
+        self.assertIn('strcmp(tag, pls->ck_body_etag)', dash)
+        self.assertIn('If-Range: %s', dash)
+        self.assertIn('pls->ck_body_retries >= 2', dash)
+        self.assertIn('!pls->ck_body_deadline', dash)
+        self.assertIn('seg != pls->init_section', dash)
+        self.assertIn('!av_stristr(headers->value, "range:")', dash)
+        self.assertIn('av_freep(&pls->ck_body_url);', dash)
+        self.assertIn('pls->ck_open_deadline = pls->ck_body_deadline;', dash)
+
+    def testHTTPMetadataExportIsDefaultOffBoundedUniqueAndResetPerResponse(self):
+        http = transform('http.c', self.originals['http.c'].decode())
+        self.assertIn('if (!s->ck_export_headers)', http)
+        self.assertIn('if (*target || strlen(value) > 512)', http)
+        for field in ['ck_etag', 'ck_content_range', 'ck_content_length', 'ck_content_encoding', 'ck_transfer_encoding']:
+            self.assertEqual(http.count(f'av_freep(&s->{field});'), 2)
+            self.assertIn(f'OFFSET({field}), AV_OPT_TYPE_STRING', http)
 
     def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())

@@ -74,5 +74,5 @@ enum CKDiagnostic {
         }
         return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
-    static func trace(_ message: String) { NSLog("[CKBridge CK11] %@", message) }
+    static func trace(_ message: String) { NSLog("[CKBridge CK12] %@", message) }
 }
