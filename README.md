@@ -104,3 +104,19 @@ IPA and record all changed ZIP entries and hashes.
 - Owned native regressions deliberately break unused renditions and verify
   selected video/audio still decode. No live iPhone stall-fix claim is made
   from PC metadata,source inspection or simulator evidence alone.
+
+## CK6 Live-Window Candidate
+
+- User-reported CK5 ON playback still freezes after a first picture and never
+  reaches playable state;CK5 is NOT accepted as a physical stability fix.
+- Pinned DASH timeline startup falls back60seconds from the end. An opt-in
+  local core option now starts6seconds back for the selected live-video plan,
+  keeping video/audio away from an expiring30second DVR boundary.
+- The old60second default remains when the option is absent/zero. Ordinary
+  routing,keys,TLS,source templates and the30second startup watchdog remain.
+- Owned rolling live tests use moving encrypted video/stereo,different keys,
+  expired/unpublished segment rejection and actual engine/render progression.
+  They compare legacy old-edge selection with near-live video/audio start ages.
+- Safe queue diagnostics show decoded frames,packet counts and fps;Ready-- is
+  not interpreted as smooth playback merely because a first frame appeared.
+- Simulator/live-fixture results are not physical ON stability proof.

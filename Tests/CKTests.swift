@@ -64,6 +64,7 @@ final class CKTests: XCTestCase {
         let option = av_opt_find(&obj, "cenc_decryption_key", nil, 0, AV_OPT_SEARCH_FAKE_OBJ)
         XCTAssertNotNil(option)
         XCTAssertNotNil(av_opt_find(&obj, "cenc_decryption_keys", nil, 0, AV_OPT_SEARCH_FAKE_OBJ))
+        XCTAssertNotNil(av_opt_find(&obj, "ck_live_delay", nil, 0, AV_OPT_SEARCH_FAKE_OBJ))
         guard let mov = av_find_input_format("mov") else { return XCTFail("MOV is missing") }
         obj = UnsafeMutableRawPointer(mutating: mov.pointee.priv_class)
         XCTAssertNotNil(av_opt_find(&obj, "decryption_keys", nil, 0, AV_OPT_SEARCH_FAKE_OBJ))
@@ -407,12 +408,17 @@ final class CKTests: XCTestCase {
         let options = CKLiveOptions()
         XCTAssertEqual(options.maxBufferDuration, 20); XCTAssertFalse(options.videoAdaptable)
         XCTAssertFalse(options.isSecondOpen)
+        XCTAssertEqual(options.formatContextOptions["ck_live_delay"] as? Int, 6)
         let reserve = [Capacity(packetCount: 38)]
         XCTAssertTrue(options.playable(capacitys: reserve, isFirst: true, isSeek: false).isPlayable)
         XCTAssertFalse(options.playable(capacitys: reserve, isFirst: false, isSeek: false).isPlayable)
         XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 2)], isFirst: true, isSeek: false).isPlayable)
         XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 100, frameCount: 0)], isFirst: true, isSeek: false).isPlayable)
         XCTAssertTrue(options.playable(capacitys: [Capacity(packetCount: 105)], isFirst: false, isSeek: false).isPlayable)
+        var hugeFPS = Capacity(packetCount: 100)
+        hugeFPS.fps = .greatestFiniteMagnitude
+        _ = options.playable(capacitys: [hugeFPS], isFirst: true, isSeek: false)
+        XCTAssertTrue(options.capacitySnapshot.contains("fps1000"), "diagnostic conversion must not trap")
     }
 
     func testPlaybackMetricsDoNotCountInitialBufferOrDuplicateStatesAsStalls() {

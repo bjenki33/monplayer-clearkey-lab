@@ -87,10 +87,10 @@ def main(root):
         video_group.insert(0, unused)
     variants.write(multi / 'variants.mpd', encoding='utf-8', xml_declaration=True)
     live = root / 'live-source'
-    moving = ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25', '-t', '60',
+    moving = ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25', '-t', '180',
               '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '50', '-an']
     dash(live / 'video/manifest.mpd', moving, KID1, KEY1)
-    stereo = ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '60',
+    stereo = ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '180',
               '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-vn']
     dash(live / 'audio/manifest.mpd', stereo, KID2, KEY2)
     live_manifest = ET.parse(live / 'video/manifest.mpd')

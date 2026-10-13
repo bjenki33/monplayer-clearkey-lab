@@ -1,6 +1,8 @@
 """Loopback-only CI fixture; no external media, credentials or content keys."""
 import gzip
 import copy
+import json
+import re
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,7 +22,8 @@ SESSION_LOCK = threading.Lock()
 
 def live_manifest(session):
     with SESSION_LOCK:
-        clock, wall = SESSIONS.setdefault(session, (time.monotonic() - 12, time.time() - 12))
+        state = SESSIONS.setdefault(session, {'clock': time.monotonic() - 120, 'wall': time.time() - 120, 'ages': {}})
+        clock, wall = state['clock'], state['wall']
     elapsed = time.monotonic() - clock
     tree = ET.parse(ROOT / 'live-source/manifest.mpd')
     root = tree.getroot()
@@ -53,7 +56,7 @@ def live_manifest(session):
             for _, timestamp, duration in entries:
                 ET.SubElement(timeline, f'{{{NS}}}S', {'t': str(timestamp), 'd': str(duration)})
             for field in ['initialization', 'media']:
-                template.set(field, '/gzip/live-source/' + template.get(field))
+                template.set(field, '/live/' + session + '/' + template.get(field))
         video = next(group for group in period if group.get('contentType') == 'video')
         unused = copy.deepcopy(video.find(f'{{{NS}}}Representation'))
         unused.set('id', 'unused-live'); unused.set('height', '45'); unused.set('bandwidth', '100000')
@@ -62,6 +65,29 @@ def live_manifest(session):
             template.set('media', '/gzip/live-source/unused/missing-$Number$.m4s')
         video.insert(0, unused)
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+
+def live_segment(session, media):
+    match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
+    if not match:
+        return True
+    group, number = match.group(1), int(match.group(2))
+    tree = ET.parse(ROOT / f'live-source/{group}/manifest.mpd')
+    template = next(tree.getroot().iter(f'{{{NS}}}SegmentTemplate'))
+    scale, current = int(template.get('timescale')), int(template.get('startNumber', '1'))
+    timestamp = 0
+    for entry in template.find(f'{{{NS}}}SegmentTimeline'):
+        timestamp = int(entry.get('t', timestamp))
+        duration = int(entry.get('d'))
+        for _ in range(int(entry.get('r', '0')) + 1):
+            if current == number:
+                with SESSION_LOCK:
+                    state = SESSIONS[session]
+                    age = time.monotonic() - state['clock'] - timestamp / scale
+                    state['ages'].setdefault(group, age)
+                return age >= duration / scale and age <= 32
+            current += 1; timestamp += duration
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -80,11 +106,22 @@ class Handler(BaseHTTPRequestHandler):
             if not session.isalnum() or len(session) > 64:
                 self.send_error(400); return
             body, code, kind, encoding = live_manifest(session), 200, 'application/dash+xml', None
+        elif path.startswith('/live/') and path.endswith('/stats'):
+            session = path.split('/')[2]
+            with SESSION_LOCK:
+                stats = dict(SESSIONS.get(session, {}).get('ages', {}))
+            body, code, kind, encoding = json.dumps(stats).encode(), 200, 'application/json', None
         else:
             # Incorrect redirect-base resolution must fail, not hit a root alias.
-            relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else '_missing_'
+            allowed = True
+            if path.startswith('/live/'):
+                _, _, session, media = path.split('/', 3)
+                allowed = live_segment(session, media)
+                relative = 'live-source/' + media
+            else:
+                relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else '_missing_'
             target = (ROOT / relative).resolve()
-            if ROOT not in target.parents or not target.is_file():
+            if not allowed or ROOT not in target.parents or not target.is_file():
                 body, code, kind, encoding = b'missing fixture', 404, 'text/plain', None
             else:
                 body, code = target.read_bytes(), 200

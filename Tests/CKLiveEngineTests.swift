@@ -1,6 +1,8 @@
 import AVFoundation
 import CoreVideo
 import KSPlayer
+import Libavformat
+import Libavutil
 import UIKit
 import XCTest
 @testable import CKBridge
@@ -45,6 +47,30 @@ final class CKLiveEngineTests: XCTestCase {
         XCTAssertGreaterThan(player.currentPlaybackTime - clock, 4, "audio-driven media clock must advance")
         XCTAssertGreaterThan(fingerprints.count, 3, "decoded/displayed moving frames must change across segments")
         XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18761/live/engineprogress/stats")!)
+        let ages = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Double])
+        print("OWNED LIVE INITIAL AGES: \(ages)")
+        XCTAssertLessThan(try XCTUnwrap(ages["video"]), 10, "selected video must start near live,not at the expiring DVR edge")
+        XCTAssertLessThan(try XCTUnwrap(ages["audio"]), 10, "audio must start near the same live position")
+    }
+
+    @MainActor
+    func testLegacySixtySecondStartFallsAtOldEdgeOfThirtySecondWindow() async throws {
+        var context: UnsafeMutablePointer<AVFormatContext>?, options: OpaquePointer?
+        let keys = try CKKeySet(["000102030405060708090a0b0c0d0e0f":"101112131415161718191a1b1c1d1e1f",
+                                 "202122232425262728292a2b2c2d2e2f":"303132333435363738393a3b3c3d3e3f"])
+        keys.formatOptions.forEach { av_dict_set(&options, $0.key, $0.value, 0) }
+        av_dict_set(&options, "ck_video_representation", "live-selected", 0)
+        av_dict_set(&options, "ck_live_delay", "0", 0)
+        av_dict_set(&options, "rw_timeout", "10000000", 0)
+        let opened = avformat_open_input(&context, "http://127.0.0.1:18761/live/legacyedge/manifest.mpd", nil, &options)
+        av_dict_free(&options)
+        XCTAssertEqual(opened, 0)
+        avformat_close_input(&context)
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18761/live/legacyedge/stats")!)
+        let ages = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Double])
+        print("OWNED LEGACY INITIAL AGES: \(ages)")
+        XCTAssertGreaterThan(try XCTUnwrap(ages["video"]), 20, "legacy60s behavior must demonstrate its old-edge selection")
     }
 
     private func fingerprint(_ buffer: CVPixelBuffer) -> UInt64 {

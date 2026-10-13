@@ -14,7 +14,7 @@ ORIGINAL = {
     'mov.c': 'b5f0792dbe49b851a5c88b91ab20872a50ebeccafd1d60406288b653a3b80cf6',
     'dashdec.c': 'ddc9e46a4f691123a23ad0a0f195aebb204c66b08a4dc62d75af13b9a7787b60',
 }
-MARKER = '/* CKBridge multikey v2: supplied keys and optional DASH selection. */\n'
+MARKER = '/* CKBridge multikey v3: supplied keys, DASH selection and live delay. */\n'
 
 KEY_SELECTION = r'''
 static int ck_hex_key(const char *text, uint8_t out[16])
@@ -109,7 +109,12 @@ def transform(name, text):
     elif name == 'dashdec.c':
         text = replace(text, '    char *cenc_decryption_key;\n',
                        '    char *cenc_decryption_key;\n    char *cenc_decryption_keys;\n'
-                       '    char *ck_video_representation;\n')
+                       '    char *ck_video_representation;\n    int ck_live_delay;\n')
+        old_delay = '            start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) - 60 * pls->fragment_timescale; // 60 seconds before end\n'
+        text = replace(text, old_delay,
+                       '            /* Opt-in near-live start avoids expired DVR-window fragments. */\n'
+                       '            start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) -\n'
+                       '                                (int64_t)(c->ck_live_delay ? c->ck_live_delay : 60) * pls->fragment_timescale;\n')
         selection = r'''
 /* Filter before component probing,including every live manifest refresh. */
 static int ck_select_video_representation(AVFormatContext *s)
@@ -160,7 +165,9 @@ static int ck_select_video_representation(AVFormatContext *s)
                        'INT_MIN, INT_MAX, .flags = FLAGS },\n'
                        '    { "ck_video_representation", "Open only the declared DASH video ID", '
                        'OFFSET(ck_video_representation), AV_OPT_TYPE_STRING, {.str = NULL}, '
-                       'INT_MIN, INT_MAX, .flags = FLAGS },\n')
+                       'INT_MIN, INT_MAX, .flags = FLAGS },\n'
+                       '    { "ck_live_delay", "Opt-in live timeline delay in seconds", '
+                       'OFFSET(ck_live_delay), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60, .flags = FLAGS },\n')
     else:
         raise RuntimeError('Unexpected patch target')
     return MARKER + text

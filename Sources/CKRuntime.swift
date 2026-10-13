@@ -148,7 +148,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
         let controls = UIStackView(); controls.axis = .vertical; controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(controls)
-        status.textColor = .white; status.font = .systemFont(ofSize: 13); status.numberOfLines = 3
+        status.textColor = .white; status.font = .systemFont(ofSize: 12); status.numberOfLines = 4
         status.text = "ClearKey test: resolving provider-supplied key..."; controls.addArrangedSubview(status)
         let buttons = UIStackView(); buttons.distribution = .fillEqually
         for (title, selector) in [("Play", #selector(play)), ("Pause", #selector(pause))] {
@@ -168,7 +168,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         guard !finished, !openingStream else { return }
         openingStream = true
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = "CK5: resolving provider-supplied keys..."
+        status.text = "CK6: resolving provider-supplied keys..."
         CKDiagnostic.trace("key request started")
         let request: URLRequest?
         do { request = try channel.keyRequest() }
@@ -196,7 +196,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     func openManifest(keys: CKKeySet) {
         metrics.keySeconds = ProcessInfo.processInfo.systemUptime - metrics.began
-        status.text = "CK5: checking DASH/HLS and source redirects..."
+        status.text = "CK6: checking DASH/HLS and source redirects..."
         let began = ProcessInfo.processInfo.systemUptime
         CKDiagnostic.trace("manifest request started")
         var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
@@ -244,7 +244,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK5: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK6: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         watchdog?.cancel()
         let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
         watchdog = timeout
@@ -254,9 +254,10 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func fail(_ error: Error, stage: CKStage = .playback) {
         guard !finished else { return }
         watchdog?.cancel(); watchdog = nil; openingStream = false
+        let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let player = layer; layer = nil; playerOptions = nil
         player?.pause(); player?.player.shutdown(); player?.removeFromSuperview()
-        status.text = CKDiagnostic.message(error, stage: stage)
+        status.text = CKDiagnostic.message(error, stage: stage) + "\n" + metrics.compact + "\n" + snapshot
         CKDiagnostic.trace(status.text ?? "playback error")
     }
     @objc func play() {
@@ -277,7 +278,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         if state == .bufferFinished { watchdog?.cancel(); watchdog = nil; openingStream = false }
         metrics.state(buffering: state == .buffering, playable: state == .bufferFinished,
                       now: ProcessInfo.processInfo.systemUptime)
-        status.text = "CK5: \(state.description).\n\(metrics.summary)"
+        updateStatus(state)
         CKDiagnostic.trace("player state: \(state.description); \(metrics.summary)")
         if state == .readyToPlay, let options = playerOptions {
             let probe = max(0, options.findTime - options.openTime)
@@ -286,7 +287,19 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     // Audio timestamps can advance while video is still buffering; only the
     // bufferFinished state above is allowed to disarm the startup deadline.
-    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {}
+    private var lastStatusUpdate = TimeInterval(0)
+    private func updateStatus(_ state: KSPlayerState) {
+        let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
+        status.text = "CK6: \(state.description).\n\(metrics.compact)\n\(snapshot)"
+    }
+    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+        guard layer === self.layer, !finished else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastStatusUpdate >= 1 {
+            lastStatusUpdate = now
+            updateStatus(layer.state)
+        }
+    }
     func player(layer: KSPlayerLayer, finish error: Error?) {
         guard layer === self.layer, !finished else { return }
         if let error { fail(error) }

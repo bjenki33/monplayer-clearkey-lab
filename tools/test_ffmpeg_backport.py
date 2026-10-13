@@ -64,6 +64,12 @@ class BackportTests(unittest.TestCase):
         self.assertIn('free_representation(c->videos[i])', dash)
         self.assertLess(dash.index('ck_select_video_representation(s);', start), dash.index('static int dash_read_header('))
 
+    def testNearLiveDelayIsOptInAndOldDefaultIsRetained(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        self.assertIn('c->ck_live_delay ? c->ck_live_delay : 60', dash)
+        self.assertIn('"ck_live_delay"', dash)
+        self.assertIn('AV_OPT_TYPE_INT, {.i64 = 0}, 0, 60', dash)
+
 
 if __name__ == '__main__':
     unittest.main()

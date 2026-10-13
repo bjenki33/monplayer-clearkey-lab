@@ -72,11 +72,13 @@ final class CKLiveOptions: KSOptions {
         startup.preferredForwardBufferDuration = 1.5; startup.isSecondOpen = false
         preferredForwardBufferDuration = 4; maxBufferDuration = 20
         isSecondOpen = false; videoAdaptable = false
+        formatContextOptions["ck_live_delay"] = 6
     }
     override func playable(capacitys: [CapacityProtocol], isFirst: Bool, isSeek: Bool) -> LoadingState {
         let summary = capacitys.prefix(2).map {
             let kind = $0.mediaType == .video ? "V" : "A"
-            return "\(kind) f\($0.frameCount)/\($0.frameMaxCount) p\($0.packetCount) fps\(Int($0.fps.isFinite ? $0.fps : 0))"
+            let fps = Int(min(1000, max(0, $0.fps.isFinite ? $0.fps : 0)))
+            return "\(kind) f\($0.frameCount)/\($0.frameMaxCount) p\($0.packetCount) fps\(fps)"
         }.joined(separator: " ")
         snapshotLock.lock(); snapshot = summary; snapshotLock.unlock()
         // First playback still needs decoded frames AND a real reserve.
