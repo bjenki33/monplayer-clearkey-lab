@@ -19,8 +19,14 @@ final class CKLiveEngineTests: XCTestCase {
     }
 
     @MainActor
-    private func exerciseNativeImport(name: String, delegated: Bool) async throws {
-        if delegated { _ = try await CKNativeDataProbe().load(name, mode: "redirect") }
+    func testNativeAsyncPlaylistAndOriginalAVPlayerRouteStartMovingStereoEngine() async throws {
+        try await exerciseNativeImport(name: "nativeasyncengine", delegated: false, asynchronous: true)
+    }
+
+    @MainActor
+    private func exerciseNativeImport(name: String, delegated: Bool, asynchronous: Bool = false) async throws {
+        if asynchronous { _ = try await CKNativeFixtures.asyncLoad(name) }
+        else if delegated { _ = try await CKNativeDataProbe().load(name, mode: "redirect") }
         else { _ = try await CKNativeFixtures.load(name, mode: "redirect") }
         let url = CKNativeFixtures.media(name)
         XCTAssertNotNil(CKRegistry.shared.channel(url))
@@ -38,7 +44,8 @@ final class CKLiveEngineTests: XCTestCase {
             if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { frames.insert(fingerprint(buffer)) }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
-        let label = delegated ? "OWNED DELEGATED IMPORT RESULT" : "OWNED NATIVE IMPORT RESULT"
+        let label = asynchronous ? "OWNED ASYNC IMPORT RESULT" :
+            delegated ? "OWNED DELEGATED IMPORT RESULT" : "OWNED NATIVE IMPORT RESULT"
         print("\(label): advance \(player.currentPlaybackTime-clock)s; distinct frames \(frames.count)")
         XCTAssertGreaterThan(player.currentPlaybackTime-clock, 7); XCTAssertGreaterThan(frames.count, 30)
         XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)

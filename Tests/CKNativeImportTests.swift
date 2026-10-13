@@ -1,10 +1,18 @@
 import AVFoundation
 import Foundation
+import ObjectiveC
 import UIKit
 import XCTest
 @testable import CKBridge
 
 enum CKNativeFixtures {
+    static func asyncLoad(_ name: String, urlAPI: Bool = false) async throws -> (Data, URLResponse) {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let url = URL(string: "http://127.0.0.1:18761/native/\(name)/list.m3u")!
+        if urlAPI { return try await session.data(from: url) }
+        return try await session.data(for: URLRequest(url: url))
+    }
     static func load(_ sessionName: String, mode: String = "list.m3u", requestAPI: Bool = false,
                      download: Bool = false) async throws -> (Data, HTTPURLResponse) {
         let url = URL(string: "http://127.0.0.1:18761/native/\(sessionName)/\(mode)")!
@@ -93,11 +101,31 @@ final class CKNativeImportTests: XCTestCase {
     func testNativeFoundationAsyncRequestLearnsPlaylist() async throws {
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
+        var target: AnyClass? = type(of: session), methods: Set<String> = []
+        while let current = target {
+            var count: UInt32 = 0
+            if let list = class_copyMethodList(current, &count) {
+                for index in 0..<Int(count) {
+                    let name = NSStringFromSelector(method_getName(list[index]))
+                    if name.contains("dataTask") && name.contains("completion") { methods.insert(name) }
+                }
+                free(list)
+            }
+            target = class_getSuperclass(current)
+        }
+        print("OWNED FOUNDATION COMPLETION SELECTORS: \(methods.sorted())")
         let url = URL(string: "http://127.0.0.1:18761/native/nativeasync/list.m3u")!
         let (data, response) = try await session.data(for: URLRequest(url: url))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertTrue(String(decoding: data, as: UTF8.self).hasPrefix("#EXTM3U\n"))
         XCTAssertNotNil(CKRegistry.shared.channel(CKNativeFixtures.media("nativeasync")))
+    }
+
+    func testNativeFoundationAsyncURLLearnsPlaylist() async throws {
+        let (data, response) = try await CKNativeFixtures.asyncLoad("nativeasyncurl", urlAPI: true)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).hasPrefix("#EXTM3U\n"))
+        XCTAssertNotNil(CKRegistry.shared.channel(CKNativeFixtures.media("nativeasyncurl")))
     }
 
     func testNativeDelegateWithoutKnownClassNameLearnsBeforeOriginalCompletion() async throws {

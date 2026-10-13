@@ -9,6 +9,7 @@ static const void *CKTaskRejected = &CKTaskRejected;
 static IMP CKOriginalTask, CKOriginalURLTask, CKOriginalDownloadTask, CKOriginalURLDownloadTask;
 static IMP CKOriginalSessionFactory;
 static NSMutableSet<NSValue *> *CKDelegateHooks;
+static NSMutableSet<NSValue *> *CKAsyncHooks;
 
 static Class CKRuntimeClass(void) { return NSClassFromString(@"CKRuntime"); }
 static void CKNativeEvent(NSInteger code) {
@@ -108,6 +109,41 @@ static void CKComplete(NSURLSessionTask *task, NSError *error) {
     }
     if (!error && CKSuccessfulResponse(task.response)) CKObserve(data, task.response.URL ?: task.currentRequest.URL);
 }
+static void CKBindAsyncCompletions(Class target) {
+    // Foundation async calls may bypass the two-argument completion factories.
+    NSArray<NSString *> *names = @[@"dataTaskWithRequest:delegate:completionHandler:",
+        @"_dataTaskWithRequest:delegate:completionHandler:", @"dataTaskWithURL:delegate:completionHandler:",
+        @"_dataTaskWithURL:delegate:completionHandler:"];
+    @synchronized(NSURLSession.class) {
+        if (!CKAsyncHooks) CKAsyncHooks = [NSMutableSet set];
+        for (NSString *name in names) {
+            SEL selector = NSSelectorFromString(name);
+            Method method = class_getInstanceMethod(target, selector);
+            if (!method || method_getNumberOfArguments(method) != 5) continue;
+            char *result = method_copyReturnType(method), *input = method_copyArgumentType(method, 2);
+            char *delegate = method_copyArgumentType(method, 3), *completion = method_copyArgumentType(method, 4);
+            BOOL compatible = result && result[0] == '@' && input && input[0] == '@' &&
+                delegate && delegate[0] == '@' && completion && !strcmp(completion, "@?");
+            free(result); free(input); free(delegate); free(completion);
+            if (!compatible) continue;
+            IMP original = method_getImplementation(method);
+            if ([CKAsyncHooks containsObject:[NSValue valueWithPointer:original]]) continue;
+            BOOL requestInput = [name containsString:@"WithRequest:"];
+            IMP wrapper = imp_implementationWithBlock(^(id receiver, id inputValue, id taskDelegate,
+                                                        void (^done)(NSData *, NSURLResponse *, NSError *)) {
+                NSURL *url = requestInput ? ((NSURLRequest *)inputValue).URL : inputValue;
+                void (^wrapped)(NSData *, NSURLResponse *, NSError *) = done ? ^(NSData *data, NSURLResponse *response, NSError *error) {
+                    if (!error && CKSuccessfulResponse(response)) CKObserve(data, response.URL ?: url);
+                    done(data, response, error);
+                } : nil;
+                return ((id (*)(id, SEL, id, id, id))original)(receiver, selector, inputValue, taskDelegate, wrapped);
+            });
+            [CKAsyncHooks addObject:[NSValue valueWithPointer:wrapper]];
+            class_replaceMethod(target, selector, wrapper, method_getTypeEncoding(method));
+            CKNativeEvent(8);
+        }
+    }
+}
 static BOOL CKEnterCallback(NSURLSessionTask *task, SEL selector) {
     // A subclass calling super must forward both originals but observe only once.
     NSMutableDictionary *local = NSThread.currentThread.threadDictionary;
@@ -163,7 +199,9 @@ static NSURLSession *CKSessionFactory(id self, SEL cmd, NSURLSessionConfiguratio
                                      id delegate, NSOperationQueue *queue) {
     // Bind before Foundation caches optional delegate callbacks, including late Swift classes.
     CKBindDelegate(delegate);
-    return ((id (*)(id, SEL, id, id, id))CKOriginalSessionFactory)(self, cmd, config, delegate, queue);
+    NSURLSession *session = ((id (*)(id, SEL, id, id, id))CKOriginalSessionFactory)(self, cmd, config, delegate, queue);
+    CKBindAsyncCompletions(object_getClass(session));
+    return session;
 }
 @interface AVPlayer (CKHooks)
 - (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item __attribute__((objc_method_family(init)));
@@ -203,6 +241,7 @@ __attribute__((constructor)) static void CKBootstrap(void) {
         CKInstall([NSURLSession.sharedSession class], @selector(dataTaskWithURL:completionHandler:), (IMP)CKURLTask, &CKOriginalURLTask);
         CKInstall([NSURLSession.sharedSession class], @selector(downloadTaskWithRequest:completionHandler:), (IMP)CKDownloadTask, &CKOriginalDownloadTask);
         CKInstall([NSURLSession.sharedSession class], @selector(downloadTaskWithURL:completionHandler:), (IMP)CKURLDownloadTask, &CKOriginalURLDownloadTask);
+        CKBindAsyncCompletions(object_getClass(NSURLSession.sharedSession));
         CKInstall(object_getClass(NSURLSession.class), @selector(sessionWithConfiguration:delegate:delegateQueue:),
                   (IMP)CKSessionFactory, &CKOriginalSessionFactory);
         CKExchange(AVPlayer.class, @selector(initWithPlayerItem:), @selector(ck_initWithPlayerItem:));

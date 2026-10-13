@@ -24,7 +24,8 @@ enum CKPresentation {
     private static var nativeLogCounts: [Int: Int] = [:]
     @objc(nativeEvent:) public static func nativeEvent(_ code: Int) {
         let tags = [1: "boot", 2: "delegate-bound", 3: "playlist-registered",
-                    4: "playlist-no-clearkey", 5: "route-miss", 6: "route-match", 7: "placeholder-missing"]
+                    4: "playlist-no-clearkey", 5: "route-miss", 6: "route-match", 7: "placeholder-missing",
+                    8: "async-factory-bound"]
         guard let tag = tags[code] else { return }
         nativeLogLock.lock()
         let count = nativeLogCounts[code, default: 0] + 1
