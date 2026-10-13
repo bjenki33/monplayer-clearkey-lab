@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 ROOT = Path(sys.argv[1]).resolve()
 NS = 'urn:mpeg:dash:schema:mpd:2011'
+ET.register_namespace('', NS)
+ET.register_namespace('cenc', 'urn:mpeg:cenc:2013')
 SESSIONS = {}
 SESSION_LOCK = threading.Lock()
 
