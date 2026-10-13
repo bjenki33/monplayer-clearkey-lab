@@ -94,6 +94,11 @@ class CKLiveOptions: KSOptions {
         isSecondOpen = false; videoAdaptable = false
         formatContextOptions["ck_live_delay"] = 6
     }
+    func useLicensedStartupReserve() {
+        // Manifest-first license opens favor a real3s reserve. Keep the accepted
+        // legacy1.5s startup/refill policy unchanged for existing GET/inline sources.
+        startup.preferredForwardBufferDuration = 3
+    }
     override func process(assetTrack: some MediaPlayerTrack) {
         if assetTrack.mediaType == .video, let declaredFrameRate {
             let probed = assetTrack.nominalFrameRate

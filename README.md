@@ -153,7 +153,8 @@ IPA and record all changed ZIP entries and hashes.
 - License-only headers for new POST flows,ephemeral nonpersistent sessions,
   streaming size bounds,5redirect limit,origin-safe license redirects and
   unchanged30s player startup deadline. Canceled generations cannot attach
-  a stale player. Live options/ordinary routing remain as CK7.
+  a stale player. New manifest-first licensed live starts favor3s reserve;
+  CK7legacy1.5s startup,4s refill and ordinary routing remain unchanged.
 - Owned tests cover actual licensing,two-key decoder output,moving live engine,
   negative replies,header/cookie isolation,redirects,streaming bounds and cancel.
 - Standards references:[W3C Clear Key](https://www.w3.org/TR/encrypted-media/#clear-key),

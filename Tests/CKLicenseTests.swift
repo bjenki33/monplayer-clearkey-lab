@@ -176,6 +176,17 @@ final class CKLicenseTests: XCTestCase {
         XCTAssertThrowsError(try CKLicenseBody.challenge.data(kids: []))
     }
 
+    func testLicensedReserveNeedsDecodedDataWithoutChangingLegacyPolicy() {
+        let live = CKLiveOptions()
+        let early = [CKTests.Capacity(packetCount: 38)]
+        XCTAssertTrue(live.playable(capacitys: early, isFirst: true, isSeek: false).isPlayable)
+        live.useLicensedStartupReserve()
+        XCTAssertFalse(live.playable(capacitys: early, isFirst: true, isSeek: false).isPlayable)
+        XCTAssertTrue(live.playable(capacitys: [CKTests.Capacity(packetCount: 75)], isFirst: true, isSeek: false).isPlayable)
+        XCTAssertFalse(live.playable(capacitys: [CKTests.Capacity(packetCount: 150, frameCount: 0)], isFirst: true, isSeek: false).isPlayable)
+        XCTAssertEqual(live.preferredForwardBufferDuration, 4); XCTAssertEqual(live.maxBufferDuration, 20)
+    }
+
     func testActualStreamingResponseLimitWithoutContentLength() async throws {
         do {
             _ = try await CKHTTP.read(URLRequest(url: URL(string: "http://127.0.0.1:18761/license/oversizestream")!), role: .license, limit: 1024 * 1024)

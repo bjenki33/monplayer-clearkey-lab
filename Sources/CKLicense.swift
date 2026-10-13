@@ -104,13 +104,16 @@ enum CKLicenseResponse: Equatable {
 
 extension CKLicenseSpec {
     func keys(from data: Data, requested: [String]) throws -> CKKeySet {
-        let payload = try response.unwrap(data)
+        let payload: Data
+        do { payload = try response.unwrap(data) }
+        catch CKFailure.invalidMetadata { throw CKFailure.invalidKey }
         if body != nil {
             if let object = try? CKJSON.object(payload) as? [String:Any], object["keys"] != nil {
                 if let type = object["type"], (type as? String) != "temporary" { throw CKFailure.unsupportedLicense }
             }
             if body == .challenge {
-                guard let object = try CKJSON.object(payload) as? [String:Any], object["keys"] is [[String:Any]] else { throw CKFailure.invalidKey }
+                guard let object = (try? CKJSON.object(payload)) as? [String:Any],
+                      object["keys"] is [[String:Any]] else { throw CKFailure.invalidKey }
             }
         }
         let keys = try CKKeys.parse(payload)

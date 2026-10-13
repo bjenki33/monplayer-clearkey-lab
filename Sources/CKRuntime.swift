@@ -196,7 +196,11 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         av_log_set_level(AV_LOG_QUIET)
         KSOptions.firstPlayerType = KSMEPlayer.self; KSOptions.secondPlayerType = nil
         let options: KSOptions
-        if let selection { options = makeLiveOptions(selection) }
+        if let selection {
+            let live = makeLiveOptions(selection)
+            if channel.license.body?.needsKeyIDs == true { live.useLicensedStartupReserve() }
+            options = live
+        }
         else { options = KSOptions() }
         options.isAutoPlay = false; options.hardwareDecode = true
         if let selection {
