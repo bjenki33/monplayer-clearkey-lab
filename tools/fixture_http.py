@@ -2,6 +2,7 @@
 import gzip
 import copy
 import json
+import base64
 import re
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,11 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
+from urllib.parse import parse_qs
+
+KIDS = ['AAECAwQFBgcICQoLDA0ODw', 'ICEiIyQlJicoKSorLC0uLw']
+LICENSE = {'keys': [{'kty': 'oct', 'kid': KIDS[0], 'k': 'EBESExQVFhcYGRobHB0eHw'},
+                    {'kty': 'oct', 'kid': KIDS[1], 'k': 'MDEyMzQ1Njc4OTo7PD0-Pw'}], 'type': 'temporary'}
 
 ROOT = Path(sys.argv[1]).resolve()
 NS = 'urn:mpeg:dash:schema:mpd:2011'
@@ -97,9 +103,95 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def license(self, mode, post):
+        raw = self.rfile.read(min(128 * 1024 + 1, int(self.headers.get('Content-Length', '0')))) if post else b''
+        if mode == 'slow':
+            time.sleep(6)
+        code, extra = 200, {}
+        result = copy.deepcopy(LICENSE)
+        if post and self.headers.get('X-License') != 'owned-license':
+            code = 403
+        if post and self.headers.get('X-Stream') is not None:
+            code = 403
+        if post:
+            try:
+                if mode == 'form':
+                    raw = base64.b64decode(parse_qs(raw.decode())['challenge'][0])
+                elif mode == 'template':
+                    raw = base64.b64decode(json.loads(raw)['challenge'])
+                request = json.loads(raw)
+                if request != {'fixture': 'owned'}:
+                    assert request['type'] == 'temporary' and set(request['kids']) == set(KIDS)
+            except Exception:
+                code = 400
+        if mode.startswith('redirect'):
+            code = 307 if mode != 'redirect302' else 302
+            extra['Location'] = '/license/standard' if mode != 'redirectcross' else 'http://localhost:18761/license/standard'
+        if mode == 'loop':
+            code, extra['Location'] = 307, '/license/loop'
+        if mode == 'missing':
+            result['keys'] = result['keys'][:1]
+        if mode == 'conflict':
+            result['keys'].append({**result['keys'][0], 'k': result['keys'][1]['k']})
+        if mode == 'persistent':
+            result['type'] = 'persistent-license'
+        if mode == 'deny':
+            code = 403
+        body = json.dumps(result, separators=(',', ':')).encode()
+        if mode == 'base64':
+            body = base64.b64encode(body)
+        elif mode == 'json':
+            body = json.dumps({'payload': result}).encode()
+        elif mode == 'jsonbase64':
+            body = json.dumps({'payload': base64.b64encode(body).decode()}).encode()
+        elif mode == 'invalid':
+            body = b'<html>not a license</html>'
+        elif mode in ['oversize', 'oversizestream']:
+            body = b'x' * (1024 * 1024 + 1)
+        elif mode == 'cookiecheck':
+            body = json.dumps({'cookie_present': self.headers.get('Cookie') is not None}).encode()
+        elif mode == 'gzip':
+            body = gzip.compress(body)
+            extra['Content-Encoding'] = 'gzip'
+        if code in [302,307]:
+            body = b''
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        if mode != 'oversizestream':
+            self.send_header('Content-Length', str(len(body)))
+        else:
+            self.send_header('Connection', 'close')
+            self.close_connection = True
+        self.send_header('Set-Cookie', 'owned-fixture=never-retain; Path=/')
+        for name, value in extra.items():
+            self.send_header(name, value)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        if path.startswith('/license/'):
+            self.license(path.split('/')[-1], True)
+        else:
+            self.send_error(404)
+
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path == '/health':
+        if path.startswith('/license/'):
+            self.license(path.split('/')[-1], False)
+            return
+        if path.startswith('/licensed/') and path.endswith('/manifest.mpd'):
+            if self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None:
+                self.send_error(403); return
+            source = ET.parse(ROOT / 'multikey/manifest.mpd')
+            for template in source.getroot().iter(f'{{{NS}}}SegmentTemplate'):
+                for field in ['initialization', 'media']:
+                    template.set(field, '/gzip/multikey/' + template.get(field))
+            body, code, kind, encoding = ET.tostring(source.getroot()), 200, 'application/dash+xml', None
+        elif path == '/health':
             body, code, kind, encoding = b'fixture ready', 200, 'text/plain', None
         elif path == '/redirect.php':
             self.send_response(302)
@@ -109,6 +201,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         elif path.startswith('/live/') and path.endswith('/manifest.mpd'):
             session = path.split('/')[2]
+            if session.startswith('licensed') and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+                self.send_error(403); return
             if not session.isalnum() or len(session) > 64:
                 self.send_error(400); return
             body, code, kind, encoding = live_manifest(session), 200, 'application/dash+xml', None
@@ -122,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
             allowed = True
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
+                if session.startswith('licensed') and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
+                    self.send_error(403); return
                 allowed = live_segment(session, media)
                 match = re.fullmatch(r'(video|audio)/chunk-stream0-(\d+)\.m4s', media)
                 if match:

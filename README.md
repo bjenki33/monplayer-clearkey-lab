@@ -15,7 +15,7 @@ are stored in this repository or supplied to CI.
 - CK3 adds a bounded KID-to-key map for DASH/CENC with up to128 supplied
   128-bit keys. Missing multikey matches fail;keys are never guessed. Sources
   with one distinct key retain CK2's default-key compatibility path.
-- Multikey HLS,POST-only licenses,dynamic license renewal and a blanket key
+- Multikey HLS,dynamic license renewal and a blanket key
   rotation claim remain outside this checkpoint. Unsupported paths fail
   explicitly rather than silently dropping the key map.
 - No Widevine/PlayReady, CDM key extraction or license-policy bypass.
@@ -142,3 +142,23 @@ IPA and record all changed ZIP entries and hashes.
   actual owned live controller/decoder pipeline. Require legacy-blocked control
   and corrected steady clock/render progression,not merely one primed frame.
 - Candidate tests and physical-device acceptance must be recorded separately.
+
+## CK8 Stage1C License Candidate
+
+- Modern ClearKey HTTP server_url performs a temporary JSON POST based on
+  declared CENC DASH key IDs. Legacy empty-body GET/inline/data paths retained.
+- Supported declared legacy/modern challenge templates and legacy raw/base64/
+  root-JSON response wrappers are validated;unknown/session/PSSH/HDCP/persistent
+  policies fail explicitly. No guessed keys,requests or GET fallback.
+- License-only headers for new POST flows,ephemeral nonpersistent sessions,
+  streaming size bounds,5redirect limit,origin-safe license redirects and
+  unchanged30s player startup deadline. Canceled generations cannot attach
+  a stale player. Live options/ordinary routing remain as CK7.
+- Owned tests cover actual licensing,two-key decoder output,moving live engine,
+  negative replies,header/cookie isolation,redirects,streaming bounds and cancel.
+- Standards references:[W3C Clear Key](https://www.w3.org/TR/encrypted-media/#clear-key),
+  [Kodi metadata](https://github.com/xbmc/inputstream.adaptive/wiki/Integration-DRM),
+  [legacy templates](https://github.com/xbmc/inputstream.adaptive/wiki/Integration-DRM-(old)).
+- Source implementation is independently written;no Kodi GPL decoder code is
+  copied. Live fetching/renewal and remaining roadmap features are separate
+  checkpoints. Candidate native/physical acceptance must be recorded separately.

@@ -4,20 +4,36 @@ import CoreFoundation
 struct CKLicenseSpec {
     let source: String
     let headers: [String: String]
+    var body: CKLicenseBody? = nil
+    var response: CKLicenseResponse = .raw
+    var inheritsStreamHeaders = true
 
     static func legacy(_ text: String) throws -> CKLicenseSpec {
         let fields = text.components(separatedBy: "|")
         guard fields.count <= 4, let first = fields.first, !first.isEmpty else { throw CKFailure.invalidMetadata }
-        if fields.count > 2, !fields[2].isEmpty { throw CKFailure.unsupportedLicense }
-        if fields.count > 3, !["", "R"].contains(fields[3]) { throw CKFailure.unsupportedLicense }
+        if ["http","https"].contains(URL(string: first)?.scheme?.lowercased() ?? "") {
+            let decoded = first.removingPercentEncoding ?? first
+            if ["{SSM}","{HASH}","{CHA-"].contains(where: { decoded.contains($0) }) { throw CKFailure.unsupportedLicense }
+        }
         var headers: [String: String] = [:]
         if fields.count > 1 { try CKHeaders.merge(fields[1], into: &headers) }
-        return CKLicenseSpec(source: first, headers: headers)
+        var result = CKLicenseSpec(source: first, headers: headers)
+        if fields.count > 2, !fields[2].isEmpty {
+            guard let text = fields[2].removingPercentEncoding,
+                  let url = URL(string: first), ["http","https"].contains(url.scheme?.lowercased() ?? "") else { throw CKFailure.invalidMetadata }
+            result.body = try CKLicenseBody.legacy(text)
+            result.inheritsStreamHeaders = false
+        }
+        if fields.count > 3 { result.response = try CKLicenseResponse.legacy(fields[3]) }
+        if result.body == nil, result.response != .raw,
+           !["http","https"].contains(URL(string: first)?.scheme?.lowercased() ?? "") { throw CKFailure.invalidMetadata }
+        return result
     }
     func equivalent(to other: CKLicenseSpec) -> Bool {
         let firstHeaders = headers.reduce(into: [String: String]()) { $0[$1.key.lowercased()] = $1.value }
         let secondHeaders = other.headers.reduce(into: [String: String]()) { $0[$1.key.lowercased()] = $1.value }
-        guard firstHeaders == secondHeaders else { return false }
+        guard firstHeaders == secondHeaders, body == other.body, response == other.response,
+              inheritsStreamHeaders == other.inheritsStreamHeaders else { return false }
         if source == other.source { return true }
         if let first = try? CKKeys.parse(Data(source.utf8)), let second = try? CKKeys.parse(Data(other.source.utf8)) { return first == second }
         return false
@@ -70,23 +86,35 @@ enum CKDRMMetadata {
                           number.doubleValue.rounded() == number.doubleValue else { throw CKFailure.invalidMetadata }
                 }
                 guard let license = config["license"] as? [String: Any] else { throw CKFailure.unsupportedLicense }
-                guard Set(license.keys).isSubset(of: ["keyids", "server_url", "req_headers"]) else { throw CKFailure.unsupportedLicense }
+                guard Set(license.keys).isSubset(of: ["keyids", "server_url", "req_headers", "req_data"]) else { throw CKFailure.unsupportedLicense }
                 var headers: [String: String] = [:]
                 if let encoded = license["req_headers"] {
                     guard let text = encoded as? String else { throw CKFailure.invalidMetadata }
                     try CKHeaders.merge(text, into: &headers)
                 }
                 let source: String
+                var body: CKLicenseBody?
                 if let keys = license["keyids"] {
-                    guard license["server_url"] == nil, keys is [String: String] else { throw CKFailure.invalidMetadata }
+                    guard license["server_url"] == nil, license["req_data"] == nil, keys is [String: String] else { throw CKFailure.invalidMetadata }
                     source = String(decoding: try JSONSerialization.data(withJSONObject: keys, options: .sortedKeys), as: UTF8.self)
                 } else if let url = license["server_url"] as? String {
-                    // Modern ClearKey remote licenses require a challenge flow.
-                    // Stage1C owns that implementation;never pretend an arbitrary GET is equivalent.
-                    guard url.lowercased().hasPrefix("data:application/json;base64,") else { throw CKFailure.unsupportedLicense }
                     source = url
+                    if url.lowercased().hasPrefix("data:application/json;base64,") {
+                        guard license["req_data"] == nil else { throw CKFailure.invalidMetadata }
+                    } else {
+                        guard let endpoint = URL(string: url), endpoint.host != nil,
+                              ["http","https"].contains(endpoint.scheme?.lowercased() ?? ""),
+                              !url.contains("{") else { throw CKFailure.unsupportedLicense }
+                        if let encoded = license["req_data"] {
+                            guard let encoded = encoded as? String, encoded.utf8.count <= 90 * 1024,
+                                  let bytes = CKKeys.base64(encoded), bytes.count <= 64 * 1024,
+                                  let text = String(data: bytes, encoding: .utf8) else { throw CKFailure.invalidMetadata }
+                            body = try CKLicenseBody.modern(text)
+                        } else { body = .challenge }
+                    }
                 } else { throw CKFailure.unsupportedLicense }
-                specs.append(CKLicenseSpec(source: source, headers: headers))
+                specs.append(CKLicenseSpec(source: source, headers: headers, body: body,
+                                           inheritsStreamHeaders: body == nil))
             }
         }
         if nonClear, !specs.isEmpty { throw CKFailure.invalidMetadata }

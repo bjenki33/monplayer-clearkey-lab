@@ -2,6 +2,7 @@ import Foundation
 
 enum CKFailure: Error, Equatable {
     case invalidPlaylist, invalidKey, invalidMetadata, unsupportedMetadata, unsupportedDRM, multipleKeys, network, unsupportedLicense, unsupportedMultiKeyManifest
+    case missingKeyIDs, missingLicenseKey, responseTooLarge, unsafeRedirect
 }
 
 struct CKChannel {
@@ -11,12 +12,29 @@ struct CKChannel {
     let headers: [String: String]
     let licenseHeaders: [String: String]
     let metadataFailure: CKFailure?
+    var licenseSpec: CKLicenseSpec? = nil
 
-    func keyRequest() throws -> URLRequest? {
+    var license: CKLicenseSpec { licenseSpec ?? CKLicenseSpec(source: keySource, headers: licenseHeaders) }
+
+    func keyRequest(kids: [String] = []) throws -> URLRequest? {
         if let metadataFailure { throw metadataFailure }
-        guard let url = URL(string: keySource), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        let spec = license
+        guard let url = URL(string: spec.source), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            if spec.body != nil { throw CKFailure.invalidMetadata }
+            return nil
+        }
+        guard url.host != nil else { throw CKFailure.invalidMetadata }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-        let headers = try CKHeaders.combining(self.headers, licenseHeaders)
+        var headers = try CKHeaders.combining(spec.inheritsStreamHeaders ? self.headers : [:], spec.headers)
+        if let body = spec.body {
+            guard !headers.keys.contains(where: { ["host","content-length","transfer-encoding","connection","proxy-authorization","proxy-connection","upgrade","trailer","te"].contains($0.lowercased()) }) else { throw CKFailure.invalidMetadata }
+            request.httpMethod = "POST"
+            request.httpBody = try body.data(kids: kids)
+            headers = try CKHeaders.combining(["Content-Type":"application/json", "Accept":"application/json"], headers)
+            if headers["Content-Type"]?.lowercased().split(separator: ";").first == "application/json" {
+                _ = try CKJSON.object(request.httpBody!)
+            }
+        }
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         return request
     }
@@ -86,7 +104,7 @@ enum CKPlaylist {
                         if let failure { throw failure }
                         if let spec = try CKDRMMetadata.resolve(properties) {
                             channels.append(CKChannel(url: url, title: title, keySource: spec.source, headers: headers,
-                                                      licenseHeaders: spec.headers, metadataFailure: nil))
+                                                      licenseHeaders: spec.headers, metadataFailure: nil, licenseSpec: spec))
                         }
                     } catch {
                         issues += 1

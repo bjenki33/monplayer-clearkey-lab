@@ -14,8 +14,11 @@ enum CKManifest {
         return url
     }
     static func kind(_ data: Data) throws -> Kind {
+        guard data.count <= 2 * 1024 * 1024 else { throw CKOpenFailure.invalidManifest }
         if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines
             .union(CharacterSet(charactersIn: "\u{feff}"))).hasPrefix("#EXTM3U") == true { return .hls }
+        let xml = String(decoding: data, as: UTF8.self).uppercased()
+        guard !xml.contains("<!DOCTYPE"), !xml.contains("<!ENTITY") else { throw CKOpenFailure.invalidManifest }
         let reader = RootReader(), parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false; parser.delegate = reader
         guard parser.parse(), reader.root == "MPD" else { throw CKOpenFailure.invalidManifest }
@@ -25,7 +28,7 @@ enum CKManifest {
         var root: String?
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                     qualifiedName qName: String?, attributes attributeDict: [String: String]) {
-            if root == nil { root = elementName }
+            if root == nil { root = elementName.split(separator: ":").last.map(String.init) }
         }
     }
 }
@@ -45,7 +48,11 @@ enum CKDiagnostic {
         if case CKFailure.invalidKey = error { return "Provider key: unsupported key map/JWKS response." }
         if case CKFailure.invalidMetadata = error { return "Playlist metadata: invalid/conflicting DRM declaration or unsafe header." }
         if case CKFailure.unsupportedMetadata = error { return "Playlist metadata: declared header/parameter scope is not implemented. It was not silently ignored." }
-        if case CKFailure.unsupportedLicense = error { return "Provider key: declared license request/manifest-key discovery is not implemented. No guessed GET, body or key was used." }
+        if case CKFailure.unsupportedLicense = error { return "Provider key: unsupported request/body/response or persistent-session policy. No guessed GET, body or key was used." }
+        if case CKFailure.missingKeyIDs = error { return "Manifest: no valid declared CENC key IDs for the license request." }
+        if case CKFailure.missingLicenseKey = error { return "Provider key: response is missing a requested key ID." }
+        if case CKFailure.responseTooLarge = error { return "\(step): response exceeds the safe size limit." }
+        if case CKFailure.unsafeRedirect = error { return "\(step): unsafe or excessive redirect was blocked." }
         let code = (error as NSError).code
         if (error as NSError).domain == NSURLErrorDomain {
             switch code {
@@ -66,5 +73,5 @@ enum CKDiagnostic {
         }
         return "\(step) failed (codes \(codes.map(String.init).joined(separator: "/"))). Check source access and stream format."
     }
-    static func trace(_ message: String) { NSLog("[CKBridge CK7] %@", message) }
+    static func trace(_ message: String) { NSLog("[CKBridge CK8] %@", message) }
 }

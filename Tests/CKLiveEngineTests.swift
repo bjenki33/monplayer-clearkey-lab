@@ -33,6 +33,11 @@ final class CKLiveEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testActualModernLicensePOSTFeedsMovingVideoAndStereoEngine() async throws {
+        try await exerciseLivePlayer(session: "licensedengine", licensed: true)
+    }
+
+    @MainActor
     func testActualLegacyInflatedProbeCannotStartDespiteBufferedPackets() async throws {
         let channel = try ownedChannel(session: "legacyinflated")
         let window = try XCTUnwrap(UIApplication.shared.windows.first)
@@ -65,8 +70,9 @@ final class CKLiveEngineTests: XCTestCase {
         XCTAssertNil(controller.metrics.playableSeconds, "inflated FPS must reproduce the startup gate failure")
     }
 
-    private func ownedChannel(session: String) throws -> CKChannel {
+    private func ownedChannel(session: String, licensed: Bool = false) throws -> CKChannel {
         let url = "http://127.0.0.1:18761/live/\(session)/manifest.mpd"
+        if licensed { return try CKLicenseFixtures.channel(manifest: url) }
         let tags = """
         #EXTM3U
         #EXTINF:-1,Owned live moving video and stereo
@@ -78,8 +84,8 @@ final class CKLiveEngineTests: XCTestCase {
     }
 
     @MainActor
-    private func exerciseLivePlayer(session: String, options: ((CKDASHSelection) -> CKLiveOptions)? = nil) async throws {
-        let channel = try ownedChannel(session: session)
+    private func exerciseLivePlayer(session: String, options: ((CKDASHSelection) -> CKLiveOptions)? = nil, licensed: Bool = false) async throws {
+        let channel = try ownedChannel(session: session, licensed: licensed)
         let window = try XCTUnwrap(UIApplication.shared.windows.first)
         let previous = window.rootViewController
         let controller = CKPlaybackController(channel: channel)

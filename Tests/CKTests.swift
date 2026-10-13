@@ -259,21 +259,23 @@ final class CKTests: XCTestCase {
         XCTAssertThrowsError(try CKKeys.parse(Data("data:application/json;base64,%%%".utf8)))
     }
 
-    func testModernRemoteLicenseDoesNotGuessGETBeforeChallengeSupport() throws {
+    func testModernRemoteLicenseUsesDeclaredStandardPOSTNotGuessedGET() throws {
         let modern = #"{"org.w3.clearkey":{"license":{"server_url":"https://example.invalid/standard-license"}}}"#
         let channel = try XCTUnwrap(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first)
-        XCTAssertEqual(channel.metadataFailure, .unsupportedLicense)
+        XCTAssertNil(channel.metadataFailure)
         XCTAssertThrowsError(try channel.keyRequest())
+        XCTAssertEqual(try channel.keyRequest(kids: [kid])?.httpMethod, "POST")
         XCTAssertTrue(CKDiagnostic.message(CKFailure.unsupportedLicense, stage: .key).contains("No guessed GET"))
     }
 
     func testLicenseBodyAndWrapperAreNotSilentlyIgnored() throws {
         let tags = "#KODIPROP:inputstream.adaptive.license_type=clearkey\n#KODIPROP:inputstream.adaptive.license_key=https://example.invalid/keys|Content-Type=application%2Fjson|R{SSM}|R"
         let channel = try XCTUnwrap(CKPlaylist.parse(playlist(tags), relativeTo: nil).first)
-        XCTAssertEqual(channel.metadataFailure, .unsupportedLicense)
+        XCTAssertNil(channel.metadataFailure)
         XCTAssertThrowsError(try channel.keyRequest())
+        XCTAssertEqual(try channel.keyRequest(kids: [kid])?.httpBody, try CKLicenseBody.challengeData(kids: [kid]))
         let modern = "{\"org.w3.clearkey\":{\"license\":{\"keyids\":{\"\(kid)\":\"\(key)\"},\"req_data\":\"BODY\"}}}"
-        XCTAssertEqual(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first?.metadataFailure, .unsupportedLicense)
+        XCTAssertEqual(CKPlaylist.parse(playlist("#KODIPROP:inputstream.adaptive.drm=\(modern)"), relativeTo: nil).first?.metadataFailure, .invalidMetadata)
     }
 
     func testRepeatedAndEscapedJSONKeysAreRejected() throws {
@@ -533,15 +535,26 @@ final class CKTests: XCTestCase {
         XCTAssertEqual(metrics.rebufferCount, 1, "manual pause/resume is not a network stall")
     }
 
+    func testAuthorizedPOSTLicenseKeysActuallyDecodeTwoKeyVideoAndAudio() async throws {
+        let channel = try CKLicenseFixtures.channel()
+        let result = try await CKSourceResolver.resolve(channel)
+        let headers = channel.headers.map { "\($0.key):\($0.value)\r\n" }.joined()
+        XCTAssertTrue(try multiFixtureMatches(result.url.absoluteString, protocols: "http,tcp,crypto,data",
+                                             keys: [:], resolvedKeys: result.keys, headers: headers))
+    }
+
     private func multiFixtureMatches(_ path: String, protocols: String, keys: [String: String],
-                                     selection: String? = nil) throws -> Bool {
+                                     selection: String? = nil, resolvedKeys: CKKeySet? = nil,
+                                     headers: String? = nil) throws -> Bool {
         let goldenURL = try XCTUnwrap(Bundle(for: CKTests.self).url(forResource: "audio-reference", withExtension: "f32", subdirectory: "Fixtures/multikey"))
         let bytes = [UInt8](try Data(contentsOf: goldenURL))
         let golden: [Float] = stride(from: 0, to: bytes.count - 3, by: 4).map {
             Float(bitPattern: UInt32(bytes[$0]) | UInt32(bytes[$0 + 1]) << 8 | UInt32(bytes[$0 + 2]) << 16 | UInt32(bytes[$0 + 3]) << 24)
         }
         var context: UnsafeMutablePointer<AVFormatContext>?, options: OpaquePointer?
-        try CKKeySet(keys).formatOptions.forEach { av_dict_set(&options, $0.key, $0.value, 0) }
+        let keySet = try resolvedKeys ?? CKKeySet(keys)
+        keySet.formatOptions.forEach { av_dict_set(&options, $0.key, $0.value, 0) }
+        if let headers { av_dict_set(&options, "headers", headers, 0) }
         av_dict_set(&options, "protocol_whitelist", protocols, 0)
         av_dict_set(&options, "rw_timeout", "10000000", 0)
         if let selection { av_dict_set(&options, "ck_video_representation", selection, 0) }

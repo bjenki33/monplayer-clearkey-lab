@@ -132,8 +132,8 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     let channel: CKChannel
     let status = UILabel()
     var layer: KSPlayerLayer?
-    var keyTask: URLSessionDataTask?
-    var manifestTask: URLSessionDataTask?
+    private var resolutionTask: Task<Void, Never>?
+    private var resolutionID = UUID()
     var watchdog: DispatchWorkItem?
     var openingStream = false
     var onClose: (() -> Void)?
@@ -168,56 +168,27 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     func resolve() {
         guard !finished, !openingStream else { return }
         openingStream = true
+        resolutionTask?.cancel()
+        resolutionID = UUID()
+        let id = resolutionID
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = "CK7: resolving provider-supplied keys..."
-        CKDiagnostic.trace("key request started")
-        let request: URLRequest?
-        do { request = try channel.keyRequest() }
-        catch { fail(error, stage: .key); return }
-        guard let request else {
-            do { openManifest(keys: try CKKeySet(CKKeys.parse(Data(channel.keySource.utf8)))) }
-            catch { fail(error, stage: .key) }; return
+        status.text = channel.license.body?.needsKeyIDs == true ? "CK8: preparing declared DASH license challenge..." : "CK8: resolving provider keys and source..."
+        CKDiagnostic.trace("isolated source resolution started")
+        resolutionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await CKSourceResolver.resolve(self.channel)
+                guard !Task.isCancelled, !self.finished, self.resolutionID == id else { return }
+                self.resolutionTask = nil
+                self.metrics.keySeconds = result.keySeconds; self.metrics.manifestSeconds = result.manifestSeconds
+                self.start(result.keys, url: result.url, selection: CKDASHSelection.plan(result.data))
+            } catch {
+                guard !Task.isCancelled, !self.finished, self.resolutionID == id else { return }
+                self.resolutionTask = nil
+                if let failure = error as? CKResolutionError { self.fail(failure.underlying, stage: failure.stage) }
+                else { self.fail(error, stage: .key) }
+            }
         }
-        let config = URLSessionConfiguration.ephemeral; config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = 25
-        let session = URLSession(configuration: config)
-        keyTask = session.dataTask(with: request) { [weak self] data, response, error in
-            session.finishTasksAndInvalidate()
-            DispatchQueue.main.async {
-                guard let self, !self.finished else { return }
-                if let error { self.fail(error, stage: .key); return }
-                guard let data, data.count <= 1024 * 1024, let response = response as? HTTPURLResponse else {
-                    self.fail(CKFailure.network, stage: .key); return
-                }
-                guard (200..<300).contains(response.statusCode) else { self.fail(CKOpenFailure.http(response.statusCode), stage: .key); return }
-                do { self.openManifest(keys: try CKKeySet(CKKeys.parse(data))) }
-                catch { self.fail(error, stage: .key) }
-            }
-        }; keyTask?.resume()
-    }
-    func openManifest(keys: CKKeySet) {
-        metrics.keySeconds = ProcessInfo.processInfo.systemUptime - metrics.began
-        status.text = "CK7: checking DASH/HLS and source redirects..."
-        let began = ProcessInfo.processInfo.systemUptime
-        CKDiagnostic.trace("manifest request started")
-        var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-        channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-        let config = URLSessionConfiguration.ephemeral; config.urlCache = nil; config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = 20
-        let session = URLSession(configuration: config)
-        manifestTask = session.dataTask(with: request) { [weak self] data, response, error in
-            session.finishTasksAndInvalidate()
-            DispatchQueue.main.async {
-                guard let self, !self.finished else { return }
-                if let error { self.fail(error, stage: .manifest); return }
-                guard let data, let response = response as? HTTPURLResponse else { self.fail(CKFailure.network, stage: .manifest); return }
-                do {
-                    let url = try CKManifest.validatedURL(data, response: response, keySet: keys)
-                    self.metrics.manifestSeconds = ProcessInfo.processInfo.systemUptime - began
-                    self.start(keys, url: url, selection: CKDASHSelection.plan(data))
-                } catch { self.fail(error, stage: .manifest) }
-            }
-        }; manifestTask?.resume()
     }
     func start(_ keys: CKKeySet, url: URL, selection: CKDASHSelection?) {
         guard !finished else { return }
@@ -247,7 +218,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK7: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK8: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         watchdog?.cancel()
         let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
         watchdog = timeout
@@ -256,6 +227,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     func fail(_ error: Error, stage: CKStage = .playback) {
         guard !finished else { return }
+        resolutionID = UUID(); resolutionTask?.cancel(); resolutionTask = nil
         watchdog?.cancel(); watchdog = nil; openingStream = false
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
         let player = layer; layer = nil; playerOptions = nil
@@ -271,7 +243,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     @objc func pause() { layer?.pause() }
     @objc func close() {
-        finished = true; keyTask?.cancel(); manifestTask?.cancel(); watchdog?.cancel()
+        finished = true; resolutionID = UUID(); resolutionTask?.cancel(); resolutionTask = nil; watchdog?.cancel()
         layer?.pause(); layer?.player.shutdown(); layer?.removeFromSuperview(); layer = nil; playerOptions = nil
         UIApplication.shared.isIdleTimerDisabled = idleBefore
         dismiss(animated: true) { self.onClose?() }
@@ -293,7 +265,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private var lastStatusUpdate = TimeInterval(0)
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
-        status.text = "CK7: \(state.description).\n\(metrics.compact)\n\(snapshot)"
+        status.text = "CK8: \(state.description).\n\(metrics.compact)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }
