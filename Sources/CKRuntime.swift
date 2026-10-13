@@ -140,6 +140,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     var finished = false
     var metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
     var playerOptions: KSOptions?
+    var makeLiveOptions: (CKDASHSelection) -> CKLiveOptions = { CKLiveOptions(declaredFrameRate: $0.frameRate) }
     private var idleBefore = false
     init(channel: CKChannel) { self.channel = channel; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -168,7 +169,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         guard !finished, !openingStream else { return }
         openingStream = true
         metrics = CKPlaybackMetrics(now: ProcessInfo.processInfo.systemUptime)
-        status.text = "CK6: resolving provider-supplied keys..."
+        status.text = "CK7: resolving provider-supplied keys..."
         CKDiagnostic.trace("key request started")
         let request: URLRequest?
         do { request = try channel.keyRequest() }
@@ -196,7 +197,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     }
     func openManifest(keys: CKKeySet) {
         metrics.keySeconds = ProcessInfo.processInfo.systemUptime - metrics.began
-        status.text = "CK6: checking DASH/HLS and source redirects..."
+        status.text = "CK7: checking DASH/HLS and source redirects..."
         let began = ProcessInfo.processInfo.systemUptime
         CKDiagnostic.trace("manifest request started")
         var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
@@ -223,7 +224,9 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
         KSOptions.logLevel = .panic
         av_log_set_level(AV_LOG_QUIET)
         KSOptions.firstPlayerType = KSMEPlayer.self; KSOptions.secondPlayerType = nil
-        let options: KSOptions = selection == nil ? KSOptions() : CKLiveOptions()
+        let options: KSOptions
+        if let selection { options = makeLiveOptions(selection) }
+        else { options = KSOptions() }
         options.isAutoPlay = false; options.hardwareDecode = true
         if let selection {
             options.formatContextOptions["ck_video_representation"] = selection.id
@@ -244,7 +247,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
             player.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             player.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -126)
         ])
-        status.text = "CK6: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
+        status.text = "CK7: opening ClearKey on-device (\(keys.distinctKeyCount) distinct keys)..."
         watchdog?.cancel()
         let timeout = DispatchWorkItem { [weak self] in self?.fail(CKOpenFailure.startupTimeout, stage: .playback) }
         watchdog = timeout
@@ -290,7 +293,7 @@ final class CKPlaybackController: UIViewController, KSPlayerLayerDelegate {
     private var lastStatusUpdate = TimeInterval(0)
     private func updateStatus(_ state: KSPlayerState) {
         let snapshot = (playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
-        status.text = "CK6: \(state.description).\n\(metrics.compact)\n\(snapshot)"
+        status.text = "CK7: \(state.description).\n\(metrics.compact)\n\(snapshot)"
     }
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer, !finished else { return }

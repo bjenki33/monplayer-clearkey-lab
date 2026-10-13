@@ -126,3 +126,19 @@ IPA and record all changed ZIP entries and hashes.
 - Safe queue diagnostics show decoded frames,packet counts and fps;Ready-- is
   not interpreted as smooth playback merely because a first frame appeared.
 - Simulator/live-fixture results are not physical ON stability proof.
+
+## CK7 Inflated-Rate Candidate
+
+- Physical CK6 reports still froze before becoming playable. Safe queue
+  diagnostics exposed600fps video despite declared25fps;reserve computation
+  divides queued frames/packets by FPS,so even many packets can fail startup.
+- Selected live plans parse integer/rational/inherited MPD frameRate. Correct
+  only invalid/nonpositive or wildly inflated probe rates before video queue
+  and decoder creation,using a validated1..120fps declaration. No guessed FPS.
+- Keep ordinary routes,audio,normal25/50/60/120fps,missing/unsafe declarations,
+  source/key/TLS policy and startup/refill/watchdog unchanged. Upstream interlace
+  processing still controls filtering and any doubled output rate.
+- Tests reproduce inflated-rate capacity starvation and inject600fps into the
+  actual owned live controller/decoder pipeline. Require legacy-blocked control
+  and corrected steady clock/render progression,not merely one primed frame.
+- Candidate tests and physical-device acceptance must be recorded separately.

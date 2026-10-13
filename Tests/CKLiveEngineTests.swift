@@ -10,7 +10,55 @@ import XCTest
 final class CKLiveEngineTests: XCTestCase {
     @MainActor
     func testActualLivePlayerAdvancesClockAndRenderedMovingFrames() async throws {
-        let url = "http://127.0.0.1:18761/live/engineprogress/manifest.mpd"
+        try await exerciseLivePlayer(session: "engineprogress")
+    }
+
+    final class InflatedProbeOptions: CKLiveOptions {
+        override func process(assetTrack: some MediaPlayerTrack) {
+            if assetTrack.mediaType == .video { assetTrack.nominalFrameRate = 600 }
+            super.process(assetTrack: assetTrack)
+        }
+    }
+
+    final class LegacyInflatedProbeOptions: CKLiveOptions {
+        override func process(assetTrack: some MediaPlayerTrack) {
+            super.process(assetTrack: assetTrack)
+            if assetTrack.mediaType == .video { assetTrack.nominalFrameRate = 600 }
+        }
+    }
+
+    @MainActor
+    func testActualLiveEngineCorrectsInflatedProbeAndKeepsMoving() async throws {
+        try await exerciseLivePlayer(session: "inflatedprobe", options: { InflatedProbeOptions(declaredFrameRate: $0.frameRate) })
+    }
+
+    @MainActor
+    func testActualLegacyInflatedProbeCannotStartDespiteBufferedPackets() async throws {
+        let channel = try ownedChannel(session: "legacyinflated")
+        let window = try XCTUnwrap(UIApplication.shared.windows.first)
+        let previous = window.rootViewController
+        let controller = CKPlaybackController(channel: channel)
+        controller.makeLiveOptions = { _ in LegacyInflatedProbeOptions() }
+        window.rootViewController = UINavigationController(rootViewController: controller)
+        window.makeKeyAndVisible(); controller.loadViewIfNeeded()
+        defer { controller.close(); window.rootViewController = previous }
+        let began = ProcessInfo.processInfo.systemUptime
+        var snapshot = ""
+        while ProcessInfo.processInfo.systemUptime - began < 12 {
+            snapshot = (controller.playerOptions as? CKLiveOptions)?.capacitySnapshot ?? ""
+            if let packets = snapshot.split(separator: " ").first(where: { $0.hasPrefix("p") }),
+               let count = Int(packets.dropFirst()), count > 100, snapshot.contains("fps600") { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        print("OWNED INFLATED LEGACY BLOCKED: \(snapshot); \(controller.metrics.summary)")
+        XCTAssertTrue(snapshot.contains("fps600"), "actual legacy engine must exercise the600fps queue")
+        let packets = snapshot.split(separator: " ").first(where: { $0.hasPrefix("p") }).flatMap { Int($0.dropFirst()) } ?? 0
+        XCTAssertGreaterThan(packets, 100, "legacy stall must have real compressed video data,not a network failure")
+        XCTAssertNil(controller.metrics.playableSeconds, "inflated FPS must reproduce the startup gate failure")
+    }
+
+    private func ownedChannel(session: String) throws -> CKChannel {
+        let url = "http://127.0.0.1:18761/live/\(session)/manifest.mpd"
         let tags = """
         #EXTM3U
         #EXTINF:-1,Owned live moving video and stereo
@@ -18,10 +66,16 @@ final class CKLiveEngineTests: XCTestCase {
         #KODIPROP:inputstream.adaptive.license_key=000102030405060708090a0b0c0d0e0f:101112131415161718191a1b1c1d1e1f,202122232425262728292a2b2c2d2e2f:303132333435363738393a3b3c3d3e3f
         \(url)
         """
-        let channel = try XCTUnwrap(CKPlaylist.parse(Data(tags.utf8), relativeTo: nil).first)
+        return try XCTUnwrap(CKPlaylist.parse(Data(tags.utf8), relativeTo: nil).first)
+    }
+
+    @MainActor
+    private func exerciseLivePlayer(session: String, options: ((CKDASHSelection) -> CKLiveOptions)? = nil) async throws {
+        let channel = try ownedChannel(session: session)
         let window = try XCTUnwrap(UIApplication.shared.windows.first)
         let previous = window.rootViewController
         let controller = CKPlaybackController(channel: channel)
+        if let options { controller.makeLiveOptions = options }
         window.rootViewController = UINavigationController(rootViewController: controller)
         window.makeKeyAndVisible(); controller.loadViewIfNeeded()
         defer { controller.close(); window.rootViewController = previous }
@@ -43,11 +97,16 @@ final class CKLiveEngineTests: XCTestCase {
             if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { fingerprints.insert(fingerprint(buffer)) }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
-        print("OWNED LIVE RESULT: advance \(player.currentPlaybackTime-clock)s; distinct frames \(fingerprints.count); \(controller.metrics.summary)")
+        print("OWNED LIVE RESULT [\(session)]: advance \(player.currentPlaybackTime-clock)s; distinct frames \(fingerprints.count); \(controller.metrics.summary)")
         XCTAssertGreaterThan(player.currentPlaybackTime - clock, 7, "media must progress steadily across the8second observation")
         XCTAssertGreaterThan(fingerprints.count, 30, "moving frames must keep changing,not freeze across segments")
         XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
-        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18761/live/engineprogress/stats")!)
+        if options != nil {
+            let snapshot = try XCTUnwrap((controller.playerOptions as? CKLiveOptions)?.capacitySnapshot)
+            XCTAssertTrue(snapshot.contains("Rate 600.00 -> 25.00 (MPD)"), "the actual decode pipeline must correct the injected probe before creating queues")
+            XCTAssertTrue(snapshot.contains("fps25")); XCTAssertFalse(snapshot.contains("fps600"))
+        }
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18761/live/\(session)/stats")!)
         let ages = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Double])
         print("OWNED LIVE INITIAL AGES: \(ages)")
         XCTAssertLessThan(try XCTUnwrap(ages["video"]), 10, "selected video must start near live,not at the expiring DVR edge")

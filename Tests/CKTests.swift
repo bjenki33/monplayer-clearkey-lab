@@ -396,6 +396,100 @@ final class CKTests: XCTestCase {
         XCTAssertTrue(CKDASHSelection.safeID("video=5200000:hd"))
     }
 
+    func testDeclaredFrameRateParsesIntegerRationalAndRejectsUnsafeRates() {
+        XCTAssertEqual(CKDASHSelection.parseFrameRate("25"), 25)
+        XCTAssertEqual(CKDASHSelection.parseFrameRate("30000/1001") ?? 0, 29.97003, accuracy: 0.0001)
+        XCTAssertEqual(CKDASHSelection.parseFrameRate("120"), 120)
+        for value in ["", "0", "0/1", "25/0", "25/", "/25", "25/1/1", "-25", "+25", "25.0",
+                      " 25", "25 ", "NaN", "inf", "600", "1/2", String(repeating: "9", count: 33)] {
+            XCTAssertNil(CKDASHSelection.parseFrameRate(value), "invalid frameRate must not become guessed FPS")
+        }
+        XCTAssertNil(CKDASHSelection.parseFrameRate(nil))
+    }
+
+    func testSelectedFrameRateInheritanceAndOverrideStayWithSelectedVideo() throws {
+        let xml = """
+        <MPD type="dynamic"><Period><AdaptationSet contentType="video" frameRate="25">
+        <Representation id="low" height="480" bandwidth="1000000" frameRate="50"/>
+        <Representation id="hd" height="1080" bandwidth="5000000"/>
+        </AdaptationSet><AdaptationSet contentType="audio" frameRate="48"/></Period></MPD>
+        """
+        XCTAssertEqual(try XCTUnwrap(CKDASHSelection.plan(Data(xml.utf8))).frameRate, 25)
+        let rational = xml.replacingOccurrences(of: "id=\"hd\"", with: "id=\"hd\" frameRate=\"30000/1001\"")
+        XCTAssertEqual(try XCTUnwrap(CKDASHSelection.plan(Data(rational.utf8))).frameRate ?? 0, 29.97003, accuracy: 0.0001)
+        let unsafe = xml.replacingOccurrences(of: "id=\"hd\"", with: "id=\"hd\" frameRate=\"600\"")
+        XCTAssertNil(try XCTUnwrap(CKDASHSelection.plan(Data(unsafe.utf8))).frameRate)
+    }
+
+    final class RateTrack: MediaPlayerTrack {
+        var trackID: Int32 = 0
+        var name = "owned rate test"
+        var languageCode: String?
+        var mediaType: AVFoundation.AVMediaType = .video
+        var nominalFrameRate: Float = 600
+        var bitRate: Int64 = 1000000
+        var isEnabled = true
+        var isImageSubtitle = false
+        var rotation: Int16 = 0
+        var dovi: DOVIDecoderConfigurationRecord?
+        var fieldOrder: FFmpegFieldOrder = .progressive
+        var formatDescription: CMFormatDescription?
+        var description: String { name }
+    }
+
+    func testBadVideoRateCorrectionBeforeBufferAndInterlaceProcessing() {
+        for reported: Float in [300, 600, 0, -1, .nan, .infinity] {
+            let track = RateTrack(); track.nominalFrameRate = reported
+            let options = CKLiveOptions(declaredFrameRate: 25)
+            options.process(assetTrack: track)
+            XCTAssertEqual(track.nominalFrameRate, 25)
+            XCTAssertTrue(options.capacitySnapshot.contains("(MPD)"))
+        }
+        let interlaced = RateTrack(); interlaced.nominalFrameRate = 300; interlaced.fieldOrder = .tt
+        let options = CKLiveOptions(declaredFrameRate: 25)
+        options.process(assetTrack: interlaced)
+        XCTAssertEqual(interlaced.nominalFrameRate, 50, "upstream deinterlace output rate must be retained")
+        XCTAssertFalse(options.hardwareDecode)
+        XCTAssertTrue(options.videoFilters.contains(where: { $0.hasPrefix("yadif=") }))
+    }
+
+    func testRateCorrectionDoesNotChangeNormalMissingDeclarationOrAudio() {
+        for rate: Float in [24, 25, 29.97, 50, 60, 120, 240] {
+            let track = RateTrack(); track.nominalFrameRate = rate
+            CKLiveOptions(declaredFrameRate: 25).process(assetTrack: track)
+            XCTAssertEqual(track.nominalFrameRate, rate)
+        }
+        let unchanged = RateTrack()
+        CKLiveOptions().process(assetTrack: unchanged)
+        XCTAssertEqual(unchanged.nominalFrameRate, 600)
+        for declaration: Float in [0, -1, 600, .nan, .infinity] {
+            let track = RateTrack()
+            CKLiveOptions(declaredFrameRate: declaration).process(assetTrack: track)
+            XCTAssertEqual(track.nominalFrameRate, 600)
+        }
+        let audio = RateTrack(); audio.mediaType = .audio; audio.nominalFrameRate = 48
+        CKLiveOptions(declaredFrameRate: 25).process(assetTrack: audio)
+        XCTAssertEqual(audio.nominalFrameRate, 48)
+    }
+
+    func testInflatedRateCapacitiesReproduceFreezeAndCorrectWithoutForcePlay() {
+        let options = CKLiveOptions(declaredFrameRate: 25)
+        let track = RateTrack(); options.process(assetTrack: track)
+        for (frames, packets, audioPackets) in [(3, 328, 718), (4, 728, 1468)] {
+            var video = Capacity(fps: 600, packetCount: packets, frameCount: frames)
+            let audio = Capacity(fps: 48, packetCount: audioPackets, frameCount: 32,
+                                 frameMaxCount: 32, mediaType: .audio)
+            XCTAssertFalse(options.playable(capacitys: [video, audio], isFirst: true, isSeek: false).isPlayable)
+            video.fps = track.nominalFrameRate
+            XCTAssertTrue(options.playable(capacitys: [video, audio], isFirst: true, isSeek: false).isPlayable)
+            XCTAssertTrue(options.playable(capacitys: [video, audio], isFirst: false, isSeek: false).isPlayable)
+        }
+        XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 20)], isFirst: true, isSeek: false).isPlayable)
+        XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 328, frameCount: 0)], isFirst: true, isSeek: false).isPlayable)
+        let emptyAudio = Capacity(fps: 48, packetCount: 0, frameCount: 0, mediaType: .audio)
+        XCTAssertFalse(options.playable(capacitys: [Capacity(packetCount: 328), emptyAudio], isFirst: true, isSeek: false).isPlayable)
+    }
+
     struct Capacity: CapacityProtocol {
         var fps: Float = 25
         var packetCount: Int

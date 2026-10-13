@@ -7,6 +7,7 @@ struct CKDASHSelection {
     let renditionCount: Int
     let bandwidth: Int64
     let height: Int
+    let frameRate: Float?
 
     static func plan(_ data: Data) -> CKDASHSelection? {
         guard data.count <= 2 * 1024 * 1024 else { return nil }
@@ -19,7 +20,22 @@ struct CKDASHSelection {
               videos.allSatisfy({ safeID($0.id) && $0.bandwidth > 0 && $0.height > 0 }),
               let best = videos.max(by: { ($0.height, $0.bandwidth) < ($1.height, $1.bandwidth) }) else { return nil }
         return CKDASHSelection(id: best.id, renditionCount: videos.count,
-                               bandwidth: best.bandwidth, height: best.height)
+                               bandwidth: best.bandwidth, height: best.height, frameRate: best.frameRate)
+    }
+
+    static func parseFrameRate(_ value: String?) -> Float? {
+        guard let value, value.utf8.count <= 32 else { return nil }
+        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count), parts.allSatisfy({
+            !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) }
+        }), let numerator = UInt32(parts[0]), numerator > 0 else { return nil }
+        let denominator: UInt32
+        if parts.count == 2 {
+            guard let number = UInt32(parts[1]), number > 0 else { return nil }
+            denominator = number
+        } else { denominator = 1 }
+        let rate = Float(numerator) / Float(denominator)
+        return rate.isFinite && (1...120).contains(rate) ? rate : nil
     }
 
     static func safeID(_ value: String) -> Bool {
@@ -45,7 +61,8 @@ struct CKDASHSelection {
                 guard values["contentType"] == "video" || values["mimeType"]?.hasPrefix("video/") == true else { return }
                 current.append(CKDASHSelection(id: attributes["id"] ?? "", renditionCount: 0,
                                                bandwidth: Int64(values["bandwidth"] ?? "") ?? 0,
-                                               height: Int(values["height"] ?? "") ?? 0))
+                                               height: Int(values["height"] ?? "") ?? 0,
+                                               frameRate: CKDASHSelection.parseFrameRate(values["frameRate"])))
                 if current.count > 32 { parser.abortParsing() }
             default: break
             }
@@ -59,20 +76,41 @@ struct CKDASHSelection {
     }
 }
 
-final class CKLiveOptions: KSOptions {
+class CKLiveOptions: KSOptions {
     private let startup = KSOptions()
     private let snapshotLock = NSLock()
     private var snapshot = ""
+    private var rateSnapshot = ""
+    let declaredFrameRate: Float?
     var capacitySnapshot: String {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
-        return snapshot
+        return [snapshot, rateSnapshot].filter { !$0.isEmpty }.joined(separator: "\n")
     }
-    override init() {
+    init(declaredFrameRate: Float? = nil) {
+        self.declaredFrameRate = declaredFrameRate.flatMap { $0.isFinite && (1...120).contains($0) ? $0 : nil }
         super.init()
         startup.preferredForwardBufferDuration = 1.5; startup.isSecondOpen = false
         preferredForwardBufferDuration = 4; maxBufferDuration = 20
         isSecondOpen = false; videoAdaptable = false
         formatContextOptions["ck_live_delay"] = 6
+    }
+    override func process(assetTrack: some MediaPlayerTrack) {
+        if assetTrack.mediaType == .video, let declaredFrameRate {
+            let probed = assetTrack.nominalFrameRate
+            // Bad live probe rates otherwise turn many seconds of packets into
+            // less than the startup reserve. Correct before queues/decoders exist.
+            if !probed.isFinite || probed <= 0 || probed > max(240, declaredFrameRate * 4) {
+                assetTrack.nominalFrameRate = declaredFrameRate
+                let original = probed.isFinite ? String(format: "%.2f", probed) : "invalid"
+                snapshotLock.lock()
+                rateSnapshot = String(format: "Rate %@ -> %.2f (MPD)", original, declaredFrameRate)
+                snapshotLock.unlock()
+                CKDiagnostic.trace(String(format: "video rate %@ -> %.2f from declared MPD", original, declaredFrameRate))
+            }
+        }
+        // Preserve the upstream field-order/filter policy and its doubled output
+        // rate for interlaced video rather than forcing every track to25fps.
+        super.process(assetTrack: assetTrack)
     }
     override func playable(capacitys: [CapacityProtocol], isFirst: Bool, isSeek: Bool) -> LoadingState {
         let summary = capacitys.prefix(2).map {
