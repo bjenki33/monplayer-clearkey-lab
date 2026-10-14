@@ -43,6 +43,10 @@ final class CKLiveEngineTests: XCTestCase {
         defer { native.pause(); native.replaceCurrentItem(with: nil); rendering.removeFromSuperlayer() }
         native.play()
         try await waitFor { item.status == .readyToPlay && native.timeControlStatus == .playing }
+        if item.status != .readyToPlay || native.timeControlStatus != .playing {
+            originalDiagnostics(item, label: name)
+            return
+        }
         XCTAssertNotEqual((native.currentItem?.asset as? AVURLAsset)?.url, url,
                           "genuine AVPlayer receives the actual on-device media endpoint")
         XCTAssertEqual((item.asset as? AVURLAsset)?.url.host, "127.0.0.1")
@@ -284,6 +288,10 @@ final class CKLiveEngineTests: XCTestCase {
         defer { native.pause(); native.replaceCurrentItem(with: nil); context.session.stop() }
         native.play()
         try await waitFor { item.status == .readyToPlay && native.timeControlStatus == .playing }
+        if item.status != .readyToPlay || native.timeControlStatus != .playing {
+            originalDiagnostics(item, label: session)
+            return
+        }
         try await CKRotationFixtures.advance(session)
         try await waitFor { context.session.stats["key_changes"] == 1 }
         let clock = native.currentTime().seconds
@@ -528,5 +536,23 @@ final class CKLiveEngineTests: XCTestCase {
             }
         }
         return hash
+    }
+
+    // Only owned synthetic fixtures enter these tests and attachments.
+    @MainActor
+    private func originalDiagnostics(_ item: AVPlayerItem, label: String) {
+        guard let session = CKNativeItems.session(item) else { return }
+        print("OWNED ORIGINAL DIAGNOSTIC [\(label)]: status \(item.status.rawValue); error \((item.error as NSError?)?.code ?? 0); stats \(session.stats)")
+        for event in item.errorLog()?.events ?? [] {
+            print("OWNED ORIGINAL ERROR: \(event.errorDomain)/\(event.errorStatusCode) \(event.errorComment ?? "")")
+        }
+        let store = session.store
+        let playlist = store.response(path: "/\(store.token)/index.m3u8", wait: 0)
+        print("OWNED ORIGINAL PLAYLIST: \(playlist.0) \(String(decoding: playlist.2, as: UTF8.self))")
+        var data = store.response(path: "/\(store.token)/init0.mp4", wait: 0).2
+        for index in 0..<3 { data.append(store.response(path: "/\(store.token)/segment\(index).m4s", wait: 0).2) }
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.mpeg-4")
+        attachment.name = "owned-original-\(label).mp4"; attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

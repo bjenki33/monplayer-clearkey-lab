@@ -11,6 +11,11 @@ on:
         type: boolean
         required: false
         default: false
+      original_player_focus:
+        description: 'Diagnostic only:run original AVPlayer owned media cases;not a release gate'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
   actions: read
@@ -94,6 +99,7 @@ jobs:
       - name: Run native module tests
         env:
           OWNED_ASAN: ${{ inputs.asan }}
+          OWNED_ORIGINAL_FOCUS: ${{ inputs.original_player_focus }}
         run: |
           set -o pipefail
           python3 tools/fixture_http.py Tests/Fixtures > build/fixture-http.log 2>&1 &
@@ -106,6 +112,13 @@ jobs:
           curl -sf http://127.0.0.1:18761/health >/dev/null
           sanitizer=NO
           sanitizer_flags=()
+          focused_tests=()
+          if [[ "$OWNED_ORIGINAL_FOCUS" == "true" ]]; then
+            focused_tests=(
+              -only-testing:CKTests/CKOriginalPlayerTests
+              -only-testing:CKTests/CKLiveEngineTests/testNativeImportedPlaylistAndOriginalAVPlayerRouteStartMovingStereoEngine
+            )
+          fi
           if [[ "$OWNED_ASAN" == "true" ]]; then
             sanitizer=YES
             # SPM's generated dynamic product also needs the sanitizer runtime.
@@ -116,7 +129,7 @@ jobs:
             -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build/simulator \
             -clonedSourcePackagesDirPath build/packages \
             -resultBundlePath build/CKTests.xcresult -enableAddressSanitizer "$sanitizer" CODE_SIGNING_ALLOWED=NO \
-            "${sanitizer_flags[@]}" test 2>&1 | tee build/native-tests.log
+            "${sanitizer_flags[@]}" "${focused_tests[@]}" test 2>&1 | tee build/native-tests.log
       - name: Export owned test failures without private data
         if: always()
         run: python3 tools/owned_test_diagnostics.py build/CKTests.xcresult build/owned-test-diagnostics
