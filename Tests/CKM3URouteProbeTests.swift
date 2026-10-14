@@ -51,4 +51,57 @@ final class CKM3URouteProbeTests: XCTestCase {
         result.tags = ["router", "m3u-provider"]; result.fields = ["_appRouter", "rootView"]
         XCTAssertEqual(result.summary, "branch=m3u-candidate nodes=0 limited=0 tags=m3u-provider,router fields=_appRouter,rootView")
     }
+
+    private class OwnedNode: CustomStringConvertible {
+        var next: OwnedNode?
+        let _currentSource = "owned-private-account"
+        var descriptions = 0
+        var description: String { descriptions += 1; return _currentSource }
+    }
+    private class OwnedParent { let _appRouter = "owned-secret-parent" }
+    private final class OwnedChild: OwnedParent { let rootView = "owned-secret-child" }
+    private enum OwnedRoute { case providerM3UDetail(String), providerJsonDetail(String) }
+    private func ownedNames(_ value: Any) -> String {
+        if value is OwnedNode { return "MonPlayer.OwnedNode" }
+        if value is OwnedChild { return "MonPlayer.OwnedChild" }
+        if value is OwnedRoute { return "MonPlayer.AppRoute" }
+        return String(reflecting: type(of: value))
+    }
+    func testM3UProbeWalksOwnedFieldsWithoutDescriptionsOrValues() {
+        let node = OwnedNode()
+        let snapshot = CKM3UProbeReflection.snapshot([node], typeNameFor: ownedNames)
+        XCTAssertTrue(snapshot.fields.contains("_currentSource"))
+        XCTAssertFalse(snapshot.summary.contains("owned-private-account")); XCTAssertEqual(node.descriptions, 0)
+    }
+    func testM3UProbeObjectCycleStopsWithoutRetainingGraph() {
+        let node = OwnedNode(); node.next = node
+        defer { node.next = nil }
+        let snapshot = CKM3UProbeReflection.snapshot([node], typeNameFor: ownedNames)
+        XCTAssertLessThanOrEqual(snapshot.visited, 4); XCTAssertFalse(snapshot.truncated)
+    }
+    func testM3UProbeReadOnlySuperclassFieldsAreIncluded() {
+        let snapshot = CKM3UProbeReflection.snapshot([OwnedChild()], typeNameFor: ownedNames)
+        XCTAssertTrue(snapshot.fields.contains("_appRouter")); XCTAssertTrue(snapshot.fields.contains("rootView"))
+        XCTAssertFalse(snapshot.summary.contains("owned-secret"))
+    }
+    func testM3UProbeEnumCaseEvidenceDoesNotLogPayload() {
+        let m3u = CKM3UProbeReflection.snapshot([OwnedRoute.providerM3UDetail("owned-secret")], typeNameFor: ownedNames)
+        let json = CKM3UProbeReflection.snapshot([OwnedRoute.providerJsonDetail("owned-secret")], typeNameFor: ownedNames)
+        XCTAssertTrue(m3u.tags.contains("case-m3u-provider")); XCTAssertTrue(json.tags.contains("case-json-provider"))
+        XCTAssertFalse(m3u.summary.contains("owned-secret")); XCTAssertFalse(json.summary.contains("owned-secret"))
+    }
+    @MainActor
+    func testM3UProbeDisabledModeCannotChangeVisibleController() {
+        let probe = CKM3URouteProbe(), controller = CKRuntime.top()
+        probe.start(info: [:]); XCTAssertFalse(probe.isRunning)
+        XCTAssertTrue(CKRuntime.top() === controller)
+    }
+    @MainActor
+    func testM3UProbeEnabledModeHasNoPanelOrNavigationAndStopsIdempotently() {
+        let probe = CKM3URouteProbe(), controller = CKRuntime.top()
+        probe.start(info: ["CKM3URouteProbeMode": true, "CKNativeLinkMode": true, "CKOriginalPlayerMode": true])
+        XCTAssertTrue(probe.isRunning); XCTAssertTrue(CKRuntime.top() === controller)
+        probe.stop(); probe.stop(); XCTAssertFalse(probe.isRunning)
+        XCTAssertTrue(CKRuntime.top() === controller)
+    }
 }

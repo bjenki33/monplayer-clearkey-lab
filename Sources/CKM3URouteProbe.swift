@@ -67,7 +67,8 @@ struct CKM3UProbeSnapshot: Equatable {
 
 enum CKM3UProbeReflection {
     static func snapshot(_ roots: [Any], nodes: Int = 256, depth: Int = 18,
-                         seconds: TimeInterval = 0.012) -> CKM3UProbeSnapshot {
+                         seconds: TimeInterval = 0.012,
+                         typeNameFor: (Any) -> String = { String(reflecting: type(of: $0)) }) -> CKM3UProbeSnapshot {
         var result = CKM3UProbeSnapshot(), queue = roots.prefix(64).map { ($0, 0) }
         var cursor = 0, objects: Set<ObjectIdentifier> = []
         let began = ProcessInfo.processInfo.systemUptime
@@ -77,7 +78,7 @@ enum CKM3UProbeReflection {
                 result.truncated = true; break
             }
             let (value, level) = queue[cursor]; cursor += 1; result.visited += 1
-            let typeName = String(reflecting: type(of: value))
+            let typeName = typeNameFor(value)
             result.tags.formUnion(CKM3UProbePolicy.tags(typeName: typeName))
             guard CKM3UProbePolicy.traversable(typeName), level < max(0, min(depth, 18)) else { continue }
             let mirror = Mirror(reflecting: value)
@@ -93,7 +94,7 @@ enum CKM3UProbeReflection {
                         if reflected.displayStyle == .enum, let tag = CKM3UProbePolicy.cases[name],
                            typeName.hasPrefix("MonPlayer.AppRoute") { result.tags.insert(tag) }
                     }
-                    let childType = String(reflecting: type(of: child.value))
+                    let childType = typeNameFor(child.value)
                     if CKM3UProbePolicy.traversable(childType), queue.count < 512 {
                         queue.append((child.value, level + 1))
                     }
@@ -113,6 +114,7 @@ final class CKM3URouteProbe {
     private var previous: CKM3UProbeSnapshot?
     private var foregroundSeconds: TimeInterval = 0
     private var lastTick: TimeInterval?
+    var isRunning: Bool { timer != nil }
     func start(info: [String: Any]) {
         guard CKM3UProbePolicy.enabled(info), timer == nil, ticks == 0 else { return }
         CKDiagnostic.trace("m3u-probe start observation-only")
@@ -121,6 +123,7 @@ final class CKM3URouteProbe {
         }
     }
     private func tick() {
+        guard timer != nil else { return }
         let now = ProcessInfo.processInfo.systemUptime
         defer { lastTick = now }
         guard UIApplication.shared.applicationState == .active else { return }
@@ -144,6 +147,7 @@ final class CKM3URouteProbe {
         }
     }
     func stop() {
+        guard timer != nil else { return }
         timer?.invalidate(); timer = nil
         CKDiagnostic.trace("m3u-probe stop observation-only")
     }
