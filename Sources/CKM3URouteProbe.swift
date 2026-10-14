@@ -78,7 +78,8 @@ enum CKM3UProbeReflection {
     }
     static func snapshot(_ roots: [Any], nodes: Int = 256, depth: Int = 18,
                          seconds: TimeInterval = 0.012,
-                         typeNameFor: ((Any) -> String)? = nil) -> CKM3UProbeSnapshot {
+                         typeNameFor: ((Any) -> String)? = nil,
+                         clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> CKM3UProbeSnapshot {
         var result = CKM3UProbeSnapshot(), pending = roots.prefix(64).reversed().map { ($0, 0) }
         var scheduled = pending.count, objects: Set<ObjectIdentifier> = []
         var typeNames: [ObjectIdentifier: String] = [:]
@@ -93,10 +94,10 @@ enum CKM3UProbeReflection {
             return bounded
         }
         if roots.count > 64 { limit("roots") }
-        let began = ProcessInfo.processInfo.systemUptime
+        let began = clock()
         while !pending.isEmpty {
             guard result.visited < max(0, min(nodes, 256)) else { limit("nodes"); break }
-            guard ProcessInfo.processInfo.systemUptime - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
+            guard clock() - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
             let (value, level) = pending.removeLast(); result.visited += 1
             let typeName = name(value)
             result.tags.formUnion(CKM3UProbePolicy.tags(typeName: typeName))
@@ -112,7 +113,7 @@ enum CKM3UProbeReflection {
             while let reflected = current, ancestors < 4 {
                 for (index, child) in reflected.children.prefix(33).enumerated() {
                     if index == 32 { limit("children"); break }
-                    guard ProcessInfo.processInfo.systemUptime - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
+                    guard clock() - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
                     if let name = child.label {
                         if CKM3UProbePolicy.fields.contains(name) { result.fields.insert(name) }
                         if reflected.displayStyle == .enum, let tag = CKM3UProbePolicy.cases[name],

@@ -78,10 +78,15 @@ final class CKM3URouteProbeTests: XCTestCase {
         XCTAssertFalse(snapshot.summary.contains("owned-private-account")); XCTAssertEqual(node.descriptions, 0)
     }
     func testM3UProbeObjectCycleStopsWithoutRetainingGraph() {
-        let node = OwnedNode(); node.next = node
-        defer { node.next = nil }
-        let snapshot = CKM3UProbeReflection.snapshot([node], typeNameFor: ownedNames)
+        weak var released: OwnedNode?
+        let snapshot = autoreleasepool { () -> CKM3UProbeSnapshot in
+            let node = OwnedNode(); node.next = node; released = node
+            defer { node.next = nil }
+            // Test graph termination independently of cold metadata/CI scheduling.
+            return CKM3UProbeReflection.snapshot([node], typeNameFor: ownedNames, clock: { 0 })
+        }
         XCTAssertLessThanOrEqual(snapshot.visited, 4); XCTAssertFalse(snapshot.truncated)
+        XCTAssertNil(released)
     }
     func testM3UProbeReadOnlySuperclassFieldsAreIncluded() {
         let snapshot = CKM3UProbeReflection.snapshot([OwnedChild()], typeNameFor: ownedNames)
@@ -164,6 +169,15 @@ final class CKM3URouteProbeTests: XCTestCase {
         XCTAssertEqual(CKM3UProbePolicy.branch(result.tags), "ambiguous")
         XCTAssertLessThanOrEqual(result.visited, 256)
         XCTAssertTrue(result.limits.isSubset(of: CKM3UProbeReflection.limitNames))
+    }
+    func testM3UPriorityControlledClockStillClampsBudgetToTwelveMilliseconds() {
+        var now: TimeInterval = 0
+        var reflections = 0
+        let result = CKM3UProbeReflection.snapshot([OwnedM3UTarget()], seconds: 999,
+            typeNameFor: { value in reflections += 1; return self.priorityNames(value) },
+            clock: { defer { now += 0.013 }; return now })
+        XCTAssertEqual(result.visited, 0); XCTAssertEqual(result.limits, ["time"])
+        XCTAssertEqual(reflections, 0)
     }
     @MainActor
     func testM3UProbeDisabledModeCannotChangeVisibleController() {
