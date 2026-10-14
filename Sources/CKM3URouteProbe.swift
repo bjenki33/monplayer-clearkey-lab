@@ -115,9 +115,17 @@ final class CKM3URouteProbe {
     private var previous: CKM3UProbeSnapshot?
     private var foregroundSeconds: TimeInterval = 0
     private var lastTick: TimeInterval?
+    private let evidenceURL: URL?
+    private var evidence: CKM3UProbeEvidence?
+    private var missingControllerTicks = 0
+    init(evidenceURL: URL? = CKM3UProbeEvidence.defaultURL) { self.evidenceURL = evidenceURL }
     var isRunning: Bool { timer != nil }
     func start(info: [String: Any]) {
         guard CKM3UProbePolicy.enabled(info), timer == nil, ticks == 0 else { return }
+        if let url = evidenceURL {
+            evidence = CKM3UProbeEvidence(url: url)
+            evidence?.update(.started, ticks: 0, seconds: 0)
+        }
         CKDiagnostic.trace("m3u-probe start observation-only")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tick() }
@@ -131,7 +139,10 @@ final class CKM3URouteProbe {
         foregroundSeconds += min(1, max(0, now - (lastTick ?? now)))
         ticks += 1
         guard foregroundSeconds < 240, ticks <= 300, emitted < 48 else { stop(); return }
-        guard let controller = CKRuntime.top() else { return }
+        if ticks % 15 == 0 {
+            evidence?.update(nil, ticks: ticks, seconds: foregroundSeconds, missingControllerTicks: missingControllerTicks)
+        }
+        guard let controller = CKRuntime.top() else { missingControllerTicks += 1; return }
         var roots: [Any] = [controller]
         var views: [UIView] = controller.viewIfLoaded.map { [$0] } ?? [], cursor = 0
         while cursor < views.count, cursor < 64 {
@@ -144,12 +155,15 @@ final class CKM3URouteProbe {
         let snapshot = CKM3UProbeReflection.snapshot(roots)
         if previous?.tags != snapshot.tags || previous?.fields != snapshot.fields || previous == nil {
             previous = snapshot; emitted += 1
+            evidence?.update(.sample, ticks: ticks, seconds: foregroundSeconds,
+                             missingControllerTicks: missingControllerTicks, snapshot: snapshot)
             CKDiagnostic.trace("m3u-probe state \(snapshot.summary)")
         }
     }
     func stop() {
         guard timer != nil else { return }
         timer?.invalidate(); timer = nil
+        evidence?.update(.stopped, ticks: ticks, seconds: foregroundSeconds, missingControllerTicks: missingControllerTicks)
         CKDiagnostic.trace("m3u-probe stop observation-only")
     }
 }
