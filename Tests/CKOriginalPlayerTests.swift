@@ -316,12 +316,21 @@ final class CKOriginalPlayerTests: XCTestCase {
     }
     func testNativeTimelineIdentityIncludesPeriodAndEpoch() throws {
         func identity(_ epoch: String, _ period: String) -> CKNativeStartup.Timeline? {
-            CKNativeStartup.timeline(Data("<MPD type=\"dynamic\" availabilityStartTime=\"\(epoch)\"><Period id=\"\(period)\" start=\"PT0S\"/></MPD>".utf8))
+            CKNativeStartup.timeline(Data("<MPD type=\"dynamic\" availabilityStartTime=\"\(epoch)\"><Period id=\"\(period)\" start=\"PT0S\"><AdaptationSet contentType=\"video\"><SegmentTemplate duration=\"2\"/></AdaptationSet></Period></MPD>".utf8))
         }
         let old = try XCTUnwrap(identity("2026-10-14T10:00:00Z", "owned"))
         XCTAssertEqual(old, identity("2026-10-14T10:00:00Z", "owned"))
         XCTAssertNotEqual(old, identity("2026-10-14T10:00:01Z", "owned"))
         XCTAssertNotEqual(old, identity("2026-10-14T10:00:00Z", "next"))
+    }
+    func testNativeChangedPresentationOffsetCannotReuseOldBoundary() throws {
+        func identity(_ offset: String) -> CKNativeStartup.Timeline? {
+            let xml = "<MPD type=\"dynamic\" availabilityStartTime=\"2026-10-14T10:00:00Z\"><Period><AdaptationSet contentType=\"video\"><SegmentTemplate timescale=\"1000\" presentationTimeOffset=\"\(offset)\" duration=\"2000\"/></AdaptationSet></Period></MPD>"
+            return CKNativeStartup.timeline(Data(xml.utf8))
+        }
+        let old = try XCTUnwrap(identity("0"))
+        XCTAssertNotEqual(old, identity("2000"))
+        XCTAssertNil(identity("invalid"))
     }
     func testNativeUnknownOrAmbiguousTimelineCannotSkipByOldTimestamp() {
         for xml in ["<MPD type=\"dynamic\"><Period/></MPD>",

@@ -5,6 +5,7 @@ enum CKNativeStartup {
         let availability: String
         let periodID: String?
         let periodStart: String?
+        let videoClocks: [String]
     }
     static func timeline(_ data: Data) -> Timeline? {
         guard data.count <= 2 * 1024 * 1024 else { return nil }
@@ -12,7 +13,8 @@ enum CKNativeStartup {
         guard !text.contains("<!DOCTYPE"), !text.contains("<!ENTITY") else { return nil }
         let reader = Reader(), parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false; parser.delegate = reader
-        guard parser.parse(), reader.live, reader.periods == 1, let availability = reader.availability,
+        guard parser.parse(), reader.live, reader.periods == 1, !reader.invalidClock,
+              !reader.videoClocks.isEmpty, let availability = reader.availability,
               availability.utf8.count <= 128,
               (reader.periodID?.utf8.count ?? 0) <= 128, (reader.periodStart?.utf8.count ?? 0) <= 128 else { return nil }
         let dates = ISO8601DateFormatter()
@@ -21,7 +23,8 @@ enum CKNativeStartup {
             dates.formatOptions = [.withInternetDateTime]
             guard dates.date(from: availability) != nil else { return nil }
         }
-        return Timeline(availability: availability, periodID: reader.periodID, periodStart: reader.periodStart)
+        return Timeline(availability: availability, periodID: reader.periodID, periodStart: reader.periodStart,
+                        videoClocks: reader.videoClocks.sorted())
     }
     static func liveDelay(_ data: Data) -> Int {
         guard data.count <= 2 * 1024 * 1024 else { return 12 }
@@ -44,6 +47,8 @@ enum CKNativeStartup {
         var window: TimeInterval?
         var availability: String?, periodID: String?, periodStart: String?
         var periods = 0
+        var videoClocks: Set<String> = []
+        var invalidClock = false
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                     qualifiedName: String?, attributes: [String: String]) {
             guard scopes.count < 64 else { parser.abortParsing(); return }
@@ -66,6 +71,16 @@ enum CKNativeStartup {
             if local == "SegmentTemplate" {
                 scope.timescale = Double(attributes["timescale"] ?? "1").flatMap {
                     $0.isFinite && $0 > 0 && $0 <= 1_000_000_000_000 ? $0 : nil
+                }
+                if scope.video {
+                    let scale = attributes["timescale"] ?? "1"
+                    let offset = attributes["presentationTimeOffset"] ?? "0"
+                    if scope.timescale == nil || scale.utf8.count > 32 || offset.utf8.count > 32 || UInt64(offset) == nil {
+                        invalidClock = true
+                    } else {
+                        videoClocks.insert(scale + ":" + offset)
+                        if videoClocks.count > 32 { invalidClock = true; parser.abortParsing() }
+                    }
                 }
                 record(attributes["duration"], scope: scope)
             } else if local == "S" { record(attributes["d"], scope: scope) }
