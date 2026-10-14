@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreVideo
+import CoreMedia
 import KSPlayer
 import Libavformat
 import Libavutil
@@ -51,8 +52,15 @@ final class CKLiveEngineTests: XCTestCase {
                           "genuine AVPlayer receives the actual on-device media endpoint")
         XCTAssertEqual((item.asset as? AVURLAsset)?.url.scheme, "mpclearkey")
         XCTAssertTrue(CKRuntime.top() === root); XCTAssertNil(CKRuntime.presentedController)
-        let audioTracks = try await item.asset.loadTracks(withMediaType: .audio)
-        XCTAssertFalse(audioTracks.isEmpty)
+        // Inspect the actual playing HLS rendition,not the logical master asset.
+        let audioTracks = item.tracks.filter { $0.isEnabled && $0.assetTrack?.mediaType == .audio }
+        XCTAssertFalse(audioTracks.isEmpty, "genuine native player must enable an audio rendition")
+        let formats = audioTracks.compactMap(\.assetTrack).flatMap(\.formatDescriptions)
+        let stereo = formats.contains {
+            CMAudioFormatDescriptionGetStreamBasicDescription($0 as! CMAudioFormatDescription)?.pointee.mChannelsPerFrame == 2
+        }
+        XCTAssertTrue(stereo, "actual native audio format must retain the owned stereo fixture")
+        print("OWNED NATIVE AUDIO: enabled tracks \(audioTracks.count); stereo \(stereo)")
         let clock = native.currentTime().seconds
         var frames: Set<UInt64> = []
         for _ in 0..<40 {
