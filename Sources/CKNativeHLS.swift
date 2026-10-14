@@ -12,6 +12,7 @@ final class CKNativeStore {
     private var sequence = 0, discardedDiscontinuities = 0, nextNumber = 0, requestedThrough = -1
     private var terminal = false, failed = false, cancelled = false
     private var targetDuration: Int?
+    private var manifestRequests = 0, initRequests = 0, mediaRequests = 0
     private(set) var videoPackets = 0, audioPackets = 0
     static let segmentLimit = 16 * 1024 * 1024
     static let memoryLimit = 64 * 1024 * 1024
@@ -21,6 +22,7 @@ final class CKNativeStore {
         condition.lock(); defer { condition.unlock() }
         return ["video_packets": videoPackets, "audio_packets": audioPackets, "segments": segments.count,
                 "bytes": segments.reduce(0, { $0 + $1.data.count }), "initializations": initializations.count]
+            .merging(["manifest_requests": manifestRequests, "init_requests": initRequests, "media_requests": mediaRequests]) { _, new in new }
     }
     func waitForDemand() {
         condition.lock(); defer { condition.unlock() }
@@ -68,6 +70,7 @@ final class CKNativeStore {
         let name = String(path.dropFirst(token.count + 2))
         condition.lock(); defer { condition.unlock() }
         if name == "index.m3u8" {
+            manifestRequests += 1
             let deadline = Date(timeIntervalSinceNow: wait)
             while segments.count < 3 && !terminal { if !condition.wait(until: deadline) { break } }
             guard !failed, !segments.isEmpty else { return (terminal ? 410 : 503, "text/plain", Data()) }
@@ -82,8 +85,9 @@ final class CKNativeStore {
             if terminal { text += "#EXT-X-ENDLIST\n" }
             return (200, "application/vnd.apple.mpegurl", Data(text.utf8))
         }
-        if let data = initializations[name] { return (200, "video/mp4", data) }
+        if let data = initializations[name] { initRequests += 1; return (200, "video/mp4", data) }
         if let segment = segments.first(where: { $0.name == name }) {
+            mediaRequests += 1
             if let number = Int(name.dropFirst(7).dropLast(4)) { requestedThrough = max(requestedThrough, number); condition.broadcast() }
             return (200, "video/iso.segment", segment.data)
         }

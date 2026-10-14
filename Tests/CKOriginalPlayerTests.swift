@@ -5,6 +5,20 @@ import XCTest
 @testable import CKBridge
 
 final class CKOriginalPlayerTests: XCTestCase {
+    @MainActor
+    func testOrdinaryNativeLocalMovieActuallyPlaysWithHooksInstalled() async throws {
+        let item = try XCTUnwrap(CKRuntime.placeholderItem())
+        let player = AVPlayer(playerItem: item)
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
+        player.play()
+        for _ in 0..<100 {
+            if item.status == .readyToPlay && player.currentTime().seconds > 0.5 { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        print("OWNED ORDINARY NATIVE CONTROL: status \(item.status.rawValue); clock \(player.currentTime().seconds); error \((item.error as NSError?)?.code ?? 0)")
+        XCTAssertEqual(item.status, .readyToPlay); XCTAssertGreaterThan(player.currentTime().seconds, 0.5)
+        XCTAssertNil(CKNativeItems.session(item))
+    }
     private func seeded() throws -> CKNativeStore {
         let store = CKNativeStore()
         let name = try store.initialize(Data("owned-init".utf8), generation: 0)
