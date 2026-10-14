@@ -13,6 +13,7 @@ final class CKNativeStore {
     private var terminal = false, failed = false, cancelled = false
     private var targetDuration: Int?
     private var manifestRequests = 0, initRequests = 0, mediaRequests = 0
+    private var droppedReplayVideoPackets = 0
     private var bandwidth: Int64 = 4_000_000
     private var codecs: String?
     private(set) var videoPackets = 0, audioPackets = 0
@@ -25,7 +26,8 @@ final class CKNativeStore {
         condition.lock(); defer { condition.unlock() }
         return ["video_packets": videoPackets, "audio_packets": audioPackets, "segments": segments.count,
                 "bytes": segments.reduce(0, { $0 + $1.data.count }), "initializations": initializations.count]
-            .merging(["manifest_requests": manifestRequests, "init_requests": initRequests, "media_requests": mediaRequests]) { _, new in new }
+            .merging(["manifest_requests": manifestRequests, "init_requests": initRequests, "media_requests": mediaRequests,
+                      "replayed_video_packets_dropped": droppedReplayVideoPackets]) { _, new in new }
     }
     func waitForDemand() {
         condition.lock(); defer { condition.unlock() }
@@ -84,6 +86,10 @@ final class CKNativeStore {
     func packet(video: Bool) {
         condition.lock(); defer { condition.unlock() }
         if video { videoPackets += 1 } else { audioPackets += 1 }
+    }
+    func droppedReplay(video: Bool) {
+        guard video else { return }
+        condition.lock(); droppedReplayVideoPackets += 1; condition.unlock()
     }
     func close(failure: Bool = false) {
         condition.lock(); defer { condition.unlock() }

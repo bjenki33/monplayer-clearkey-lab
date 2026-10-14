@@ -198,7 +198,10 @@ final class CKNativeRemux {
             if origin == nil {
                 // Reopening the same DASH epoch after key refresh must not
                 // append already-published historical frames a second time.
-                guard keyframe, resumeAfter.map({ micros >= $0 }) ?? true else { continue }
+                if let resumeAfter, micros < resumeAfter {
+                    store.droppedReplay(video: index == video); continue
+                }
+                guard keyframe else { continue }
                 origin = micros
             }
             guard let origin, micros >= origin else { continue }

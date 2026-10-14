@@ -309,12 +309,14 @@ final class CKLiveEngineTests: XCTestCase {
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         let stats = try await CKRotationFixtures.stats(session)
-        print("OWNED ORIGINAL ROTATION RESULT [\(session)]: advance \(native.currentTime().seconds-clock)s; distinct frames \(frames.count); changes \(context.session.stats["key_changes"] ?? -1); acquisitions \(context.session.stats["new_acquisitions"] ?? -1)")
+        print("OWNED ORIGINAL ROTATION RESULT [\(session)]: advance \(native.currentTime().seconds-clock)s; distinct frames \(frames.count); changes \(context.session.stats["key_changes"] ?? -1); acquisitions \(context.session.stats["new_acquisitions"] ?? -1); replayed packets dropped \(context.session.stats["replayed_video_packets_dropped"] ?? -1)")
         XCTAssertTrue(native.currentItem === item); XCTAssertTrue(item.asset === asset)
         XCTAssertGreaterThan(native.currentTime().seconds-clock, 10); XCTAssertGreaterThan(frames.count, 40)
         XCTAssertGreaterThan(stats["rotated_requests"] ?? 0, 0)
         XCTAssertEqual(context.session.stats["key_changes"], 1)
         XCTAssertEqual(context.session.stats["new_acquisitions"], preloaded ? 0 : 1)
+        XCTAssertGreaterThan(context.session.stats["replayed_video_packets_dropped"] ?? 0, 0,
+                             "same-epoch key update must not append historical frames again")
         XCTAssertEqual(stats["new_key_requests"] ?? 0, preloaded ? 0 : 1)
         XCTAssertNil(CKRuntime.presentedController)
     }
