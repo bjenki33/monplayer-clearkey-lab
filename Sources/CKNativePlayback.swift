@@ -72,9 +72,13 @@ final class CKNativePlayback {
 
 @objc(CKNativeAssetContext) final class CKNativeAssetContext: NSObject {
     let session: CKNativePlayback
-    init(_ session: CKNativePlayback) { self.session = session }
-    @objc var url: URL { session.http.url }
+    let loader: CKNativeWarmRedirect
+    init(_ session: CKNativePlayback) {
+        self.session = session; loader = CKNativeWarmRedirect(store: session.store, httpURL: session.http.url)
+    }
+    @objc var url: URL { loader.url }
     @objc(attach:) func attach(_ asset: AVAsset) {
+        if let asset = asset as? AVURLAsset { loader.attach(asset) }
         CKNativeItems.attach(self, to: asset)
         session.start()
     }

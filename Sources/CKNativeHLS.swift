@@ -32,6 +32,17 @@ final class CKNativeStore {
         if !terminal && nextNumber - requestedThrough >= 7 { condition.wait(until: Date(timeIntervalSinceNow: 0.2)) }
     }
     var ahead: Int { condition.lock(); defer { condition.unlock() }; return nextNumber - requestedThrough }
+    func waitUntilReady(seconds: TimeInterval, interrupted: () -> Bool = { false }) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        while !terminal && segments.count < Self.startupSegments && !interrupted() {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            if remaining <= 0 { return false }
+            condition.wait(until: Date(timeIntervalSinceNow: min(0.2, remaining)))
+        }
+        return !interrupted() && !failed && !cancelled && !segments.isEmpty &&
+            (terminal || segments.count >= Self.startupSegments)
+    }
     func describe(bandwidth: Int64, codecs: String?) {
         condition.lock(); defer { condition.unlock() }
         if bandwidth > 0, bandwidth <= 1_000_000_000 { self.bandwidth = bandwidth }
@@ -178,10 +189,6 @@ final class CKNativeHTTP {
         guard first.count == 3, ["GET", "HEAD"].contains(String(first[0])) else { connection.cancel(); return }
         let path = String(first[1])
         var (status, mime, body) = store.response(path: path, wait: 0)
-        if status == 503, first[0] == "GET", path.hasSuffix("/media.m3u8") {
-            warmPlaylist(connection, path: path)
-            return
-        }
         var extra = ""
         let ranges = lines.dropFirst().filter { $0.lowercased().hasPrefix("range:") }
         if status == 200, !String(first[1]).hasSuffix(".m3u8"), let range = ranges.first {
@@ -216,32 +223,6 @@ final class CKNativeHTTP {
             if error != nil { connection.cancel(); return }
             self?.queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
         })
-    }
-    private func warmPlaylist(_ connection: NWConnection, path: String) {
-        let prefix = Data("#EXTM3U\n#EXT-X-VERSION:7\n".utf8)
-        var header = Data("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
-        header.append(chunk(prefix))
-        connection.send(content: header, completion: .contentProcessed { error in if error != nil { connection.cancel() } })
-        let deadline = ProcessInfo.processInfo.systemUptime + 25
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if case .cancelled = connection.state { return }
-            let (status, _, body) = store.response(path: path, wait: 0.8, recordRequest: false)
-            if status == 200, body.starts(with: prefix) {
-                var final = chunk(Data(body.dropFirst(prefix.count)))
-                final.append(Data("0\r\n\r\n".utf8)); finish(connection, data: final)
-                return
-            }
-            guard status == 503 else { connection.cancel(); return }
-            // Legal HLS comments keep progress alive;never invent media segments.
-            connection.send(content: chunk(Data("# preparing\n".utf8)), completion: .contentProcessed { error in
-                if error != nil { connection.cancel() }
-            })
-        }
-        connection.cancel()
-    }
-    private func chunk(_ body: Data) -> Data {
-        var result = Data("\(String(body.count, radix: 16))\r\n".utf8)
-        result.append(body); result.append(Data("\r\n".utf8)); return result
     }
     deinit { listener.cancel() }
 }

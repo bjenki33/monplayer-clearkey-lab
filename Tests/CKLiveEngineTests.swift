@@ -49,7 +49,7 @@ final class CKLiveEngineTests: XCTestCase {
         }
         XCTAssertNotEqual((native.currentItem?.asset as? AVURLAsset)?.url, url,
                           "genuine AVPlayer receives the actual on-device media endpoint")
-        XCTAssertEqual((item.asset as? AVURLAsset)?.url.host, "127.0.0.1")
+        XCTAssertEqual((item.asset as? AVURLAsset)?.url.scheme, "mpclearkey")
         XCTAssertTrue(CKRuntime.top() === root); XCTAssertNil(CKRuntime.presentedController)
         let audioTracks = try await item.asset.loadTracks(withMediaType: .audio)
         XCTAssertFalse(audioTracks.isEmpty)

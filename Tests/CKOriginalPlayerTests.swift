@@ -32,6 +32,8 @@ final class CKOriginalPlayerTests: XCTestCase {
         let playback = try CKNativePlayback(channel: channel)
         defer { playback.stop() }
         playback.playing(true); playback.start()
+        let ready = await Task.detached { playback.store.waitUntilReady(seconds: 25) }.value
+        XCTAssertTrue(ready)
         try await controlNativeHLS(playback.http.url, label: "directRemux")
         print("OWNED DIRECT REMUX REQUESTS: \(playback.stats)")
     }
@@ -51,14 +53,20 @@ final class CKOriginalPlayerTests: XCTestCase {
         }
         if !delayed { try await seed.value }
         let server = try CKNativeHTTP(store: store); defer { server.stop() }
-        try await controlNativeHLS(server.url, label: delayed ? "delayedRing" : finite ? "finiteRing" : "liveRing")
+        let redirect = delayed ? CKNativeWarmRedirect(store: store, httpURL: server.url) : nil
+        try await controlNativeHLS(server.url, label: delayed ? "delayedRing" : finite ? "finiteRing" : "liveRing", redirect: redirect)
         try await seed.value
         print("OWNED HLS CONTROL REQUESTS: \(store.stats)")
     }
 
     @MainActor
-    private func controlNativeHLS(_ url: URL, label: String) async throws {
-        let player = AVPlayer(url: url), item = try XCTUnwrap(player.currentItem)
+    private func controlNativeHLS(_ url: URL, label: String, redirect: CKNativeWarmRedirect? = nil) async throws {
+        let player: AVPlayer
+        if let redirect {
+            let asset = AVURLAsset(url: redirect.url); redirect.attach(asset)
+            player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        } else { player = AVPlayer(url: url) }
+        let item = try XCTUnwrap(player.currentItem)
         defer { player.pause(); player.replaceCurrentItem(with: nil) }
         player.play()
         for _ in 0..<200 {
@@ -167,22 +175,13 @@ final class CKOriginalPlayerTests: XCTestCase {
         let (_, invalid) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((invalid as? HTTPURLResponse)?.statusCode, 416)
     }
-    func testNativeWarmPlaylistStreamsOnlyRealCompleteSegments() async throws {
-        let store = try seeded(count: 0), server = try CKNativeHTTP(store: store)
-        defer { server.stop() }
-        let seed = Task.detached {
-            try await Task.sleep(nanoseconds: 1_200_000_000)
-            for _ in 0..<6 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
-        }
-        let url = server.url.deletingLastPathComponent().appendingPathComponent("media.m3u8")
-        let (data, response) = try await URLSession.shared.data(from: url)
-        try await seed.value
-        let text = String(decoding: data, as: UTF8.self)
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertTrue(text.hasPrefix("#EXTM3U\n#EXT-X-VERSION:7\n"))
-        XCTAssertEqual(text.components(separatedBy: "#EXTM3U").count - 1, 1)
-        XCTAssertEqual(text.components(separatedBy: "#EXTINF:").count - 1, 6)
-        XCTAssertTrue(text.contains("# preparing\n")); XCTAssertFalse(text.contains("#EXT-X-ENDLIST"))
+    func testNativePreparationGateHonorsReadinessFailureAndCancellation() throws {
+        let store = try seeded(count: 0)
+        XCTAssertFalse(store.waitUntilReady(seconds: 0))
+        XCTAssertFalse(store.waitUntilReady(seconds: 1, interrupted: { true }))
+        for _ in 0..<6 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
+        XCTAssertTrue(store.waitUntilReady(seconds: 0))
+        store.close(); XCTAssertFalse(store.waitUntilReady(seconds: 0))
     }
     @MainActor
     func testOriginalItemIdentityStatusAndPlayPauseRemainNative() async throws {
@@ -191,7 +190,7 @@ final class CKOriginalPlayerTests: XCTestCase {
         let player = AVPlayer(playerItem: item)
         XCTAssertTrue(player.currentItem === item)
         let session = try XCTUnwrap(CKNativeItems.session(item))
-        XCTAssertEqual((item?.asset as? AVURLAsset)?.url, session.http.url)
+        XCTAssertEqual((item?.asset as? AVURLAsset)?.url.scheme, "mpclearkey")
         let original = CKRuntime.top()
         player.playImmediately(atRate: 1)
         try await waitFor { item?.status == .readyToPlay && player.timeControlStatus == .playing }
