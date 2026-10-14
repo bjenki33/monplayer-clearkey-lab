@@ -38,11 +38,24 @@ final class CKM3UProbeEvidenceTests: XCTestCase {
         XCTAssertEqual(report.ticks, 300); XCTAssertEqual(report.missingControllerTicks, 300)
         XCTAssertEqual(record.nodes, 256); XCTAssertEqual(record.foregroundSeconds, 0)
     }
+    func testM3UEvidenceV2LimitReasonsAreWhitelistedAndSeparateFromUserData() throws {
+        let url = try temporaryURL(), store = CKM3UProbeEvidence(url: url)
+        var snapshot = CKM3UProbeSnapshot()
+        snapshot.limits = ["time", "nodes", "owned-secret"]; snapshot.truncated = true
+        store.update(.started, ticks: 0, seconds: 0)
+        store.update(.sample, ticks: 1, seconds: 1, snapshot: snapshot)
+        store.drainForTesting()
+        let report = try read(url), record = try XCTUnwrap(report.records.last)
+        XCTAssertEqual(report.schema, 2); XCTAssertEqual(record.limits, ["nodes", "time"])
+        XCTAssertEqual(CKM3UProbeEvidence.fileName, "CKM3URouteProbe-v2.json")
+        XCTAssertFalse(try String(contentsOf: url, encoding: .utf8).contains("owned-secret"))
+    }
     func testM3UEvidenceMaximumSamplesAndBytesAreBounded() throws {
         let url = try temporaryURL(), store = CKM3UProbeEvidence(url: url)
         var snapshot = CKM3UProbeSnapshot()
         snapshot.tags = Set(CKM3UProbePolicy.names.values).union(CKM3UProbePolicy.cases.values)
         snapshot.fields = CKM3UProbePolicy.fields; snapshot.visited = 256
+        snapshot.limits = CKM3UProbeReflection.limitNames; snapshot.truncated = true
         store.update(.started, ticks: 0, seconds: 0)
         for tick in 1...200 { store.update(.sample, ticks: tick, seconds: Double(tick), snapshot: snapshot) }
         store.update(.stopped, ticks: 200, seconds: 200)

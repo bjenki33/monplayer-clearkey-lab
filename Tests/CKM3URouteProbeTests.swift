@@ -94,6 +94,77 @@ final class CKM3URouteProbeTests: XCTestCase {
         XCTAssertTrue(m3u.tags.contains("case-m3u-provider")); XCTAssertTrue(json.tags.contains("case-json-provider"))
         XCTAssertFalse(m3u.summary.contains("owned-secret")); XCTAssertFalse(json.summary.contains("owned-secret"))
     }
+    private struct OwnedM3UTarget { let privateValue = "owned-private-value" }
+    private struct OwnedJSONTarget { let privateValue = "owned-private-value" }
+    private struct OwnedWrapper { let _rootView: Any }
+    private struct OwnedSibling { let content: String = "owned-private-sibling" }
+    private struct OwnedPriorityRouter { let _path: [OwnedRoute] }
+    private struct OwnedPriorityContainer {
+        let unrelated: [OwnedSibling]
+        let _router: OwnedPriorityRouter
+    }
+    private struct OwnedFallbackContainer { let unrelated: OwnedSibling; let deferred: OwnedWrapper }
+    private func priorityNames(_ value: Any) -> String {
+        if value is OwnedM3UTarget { return "MonPlayer.ProviderM3UDetailScreen" }
+        if value is OwnedJSONTarget { return "MonPlayer.ProviderJsonDetailScreen" }
+        if value is OwnedWrapper { return "SwiftUI.OwnedWrapper" }
+        if value is OwnedSibling { return "SwiftUI.OwnedSibling" }
+        if value is OwnedPriorityRouter { return "MonPlayer.AppRouter" }
+        if value is OwnedPriorityContainer { return "SwiftUI.OwnedPriorityContainer" }
+        if value is OwnedFallbackContainer { return "SwiftUI.OwnedFallbackContainer" }
+        return ownedNames(value)
+    }
+    func testM3UPriorityRootChainPrecedesWideSiblingRootsWithinExistingNodeBudget() {
+        let root = OwnedWrapper(_rootView: OwnedWrapper(_rootView: OwnedM3UTarget()))
+        let roots: [Any] = [root] + Array(repeating: OwnedSibling(), count: 63)
+        let result = CKM3UProbeReflection.snapshot(roots, nodes: 4, typeNameFor: priorityNames)
+        XCTAssertTrue(result.tags.contains("m3u-provider")); XCTAssertEqual(result.visited, 4)
+        XCTAssertTrue(result.limits.contains("nodes")); XCTAssertFalse(result.summary.contains("owned-private"))
+    }
+    func testM3UPriorityRouterPathPrecedesUnrelatedArray() {
+        let root = OwnedPriorityContainer(unrelated: Array(repeating: OwnedSibling(), count: 200),
+                                          _router: OwnedPriorityRouter(_path: [.providerM3UDetail("owned-secret")]))
+        let result = CKM3UProbeReflection.snapshot([root], nodes: 4, typeNameFor: priorityNames)
+        XCTAssertTrue(result.tags.contains("router")); XCTAssertTrue(result.tags.contains("case-m3u-provider"))
+        XCTAssertTrue(result.fields.contains("_router")); XCTAssertTrue(result.fields.contains("_path"))
+        XCTAssertEqual(result.visited, 4); XCTAssertFalse(result.summary.contains("owned-secret"))
+    }
+    func testM3UPriorityFallbackStillFindsDeferredRootWithoutIncreasingDepth() {
+        let root = OwnedFallbackContainer(unrelated: OwnedSibling(), deferred: OwnedWrapper(_rootView: OwnedM3UTarget()))
+        let result = CKM3UProbeReflection.snapshot([root], typeNameFor: priorityNames)
+        XCTAssertTrue(result.tags.contains("m3u-provider")); XCTAssertLessThanOrEqual(result.visited, 8)
+        XCTAssertFalse(result.summary.contains("owned-private"))
+    }
+    func testM3UPriorityReportsRootNodeAndTimeLimitsWithoutReflectingPastBounds() {
+        let roots = Array(repeating: "owned-secret", count: 100)
+        let result = CKM3UProbeReflection.snapshot(roots, nodes: 0)
+        XCTAssertEqual(result.visited, 0); XCTAssertEqual(result.limits, ["roots", "nodes"])
+        let timed = CKM3UProbeReflection.snapshot([OwnedM3UTarget()], seconds: 0, typeNameFor: priorityNames)
+        XCTAssertEqual(timed.visited, 0); XCTAssertEqual(timed.limits, ["time"])
+    }
+    func testM3UPriorityReportsDepthLimitConservatively() {
+        let root = OwnedWrapper(_rootView: OwnedM3UTarget())
+        let result = CKM3UProbeReflection.snapshot([root], depth: 1, typeNameFor: priorityNames)
+        XCTAssertTrue(result.truncated); XCTAssertTrue(result.limits.contains("depth"))
+        XCTAssertEqual(result.visited, 2)
+    }
+    func testM3UPriorityReportsChildLimitWithoutWalkingLargeScalarCollection() {
+        let result = CKM3UProbeReflection.snapshot([Array(repeating: 1, count: 10000)])
+        XCTAssertEqual(result.visited, 1); XCTAssertTrue(result.limits.contains("children"))
+        XCTAssertTrue(result.fields.isEmpty); XCTAssertTrue(result.tags.isEmpty)
+    }
+    func testM3UPriorityRejectsOversizedTypeNamesAndLogsOnlyFixedReason() {
+        let result = CKM3UProbeReflection.snapshot([OwnedM3UTarget()], typeNameFor: { _ in String(repeating: "x", count: 9000) })
+        XCTAssertEqual(result.limits, ["types"]); XCTAssertTrue(result.tags.isEmpty)
+        XCTAssertTrue(result.fields.isEmpty); XCTAssertFalse(result.summary.contains("xxxx"))
+    }
+    func testM3UPriorityDoesNotAuthorizeM3UWhenBothActualBranchesAreObserved() {
+        let roots: [Any] = [OwnedWrapper(_rootView: OwnedM3UTarget()), OwnedWrapper(_rootView: OwnedJSONTarget())]
+        let result = CKM3UProbeReflection.snapshot(roots, typeNameFor: priorityNames)
+        XCTAssertEqual(CKM3UProbePolicy.branch(result.tags), "ambiguous")
+        XCTAssertLessThanOrEqual(result.visited, 256)
+        XCTAssertTrue(result.limits.isSubset(of: CKM3UProbeReflection.limitNames))
+    }
     @MainActor
     func testM3UProbeDisabledModeCannotChangeVisibleController() {
         let probe = CKM3URouteProbe(), controller = CKRuntime.top()

@@ -59,6 +59,7 @@ enum CKM3UProbePolicy {
 
 struct CKM3UProbeSnapshot: Equatable {
     var tags: Set<String> = [], fields: Set<String> = []
+    var limits: Set<String> = []
     var visited = 0, truncated = false
     var summary: String {
         "branch=\(CKM3UProbePolicy.branch(tags)) nodes=\(visited) limited=\(truncated ? 1 : 0) " +
@@ -67,41 +68,72 @@ struct CKM3UProbeSnapshot: Equatable {
 }
 
 enum CKM3UProbeReflection {
+    static let limitNames: Set<String> = ["roots", "nodes", "time", "depth", "children", "ancestors", "queue", "types"]
+    private static func priority(label: String?, typeName: String) -> Int {
+        if ["rootView", "_rootView", "root", "appRouter", "_appRouter", "router", "_router",
+            "path", "_path", "route", "routes", "currentRoute", "navigationCoordinator"].contains(label ?? "") { return 0 }
+        if ["storage", "_storage", "content", "base", "value", "_value", "object", "_object", "inner"].contains(label ?? "") { return 1 }
+        if typeName.hasPrefix("Swift.Optional<") || typeName.hasPrefix("MonPlayer.") { return 2 }
+        return 3
+    }
     static func snapshot(_ roots: [Any], nodes: Int = 256, depth: Int = 18,
                          seconds: TimeInterval = 0.012,
-                         typeNameFor: (Any) -> String = { String(reflecting: type(of: $0)) }) -> CKM3UProbeSnapshot {
-        var result = CKM3UProbeSnapshot(), queue = roots.prefix(64).map { ($0, 0) }
-        var cursor = 0, objects: Set<ObjectIdentifier> = []
+                         typeNameFor: ((Any) -> String)? = nil) -> CKM3UProbeSnapshot {
+        var result = CKM3UProbeSnapshot(), pending = roots.prefix(64).reversed().map { ($0, 0) }
+        var scheduled = pending.count, objects: Set<ObjectIdentifier> = []
+        var typeNames: [ObjectIdentifier: String] = [:]
+        func limit(_ reason: String) { result.truncated = true; result.limits.insert(reason) }
+        func name(_ value: Any) -> String {
+            let identity = ObjectIdentifier(type(of: value))
+            if typeNameFor == nil, let cached = typeNames[identity] { return cached }
+            let raw = typeNameFor?(value) ?? String(reflecting: type(of: value))
+            let bounded: String
+            if raw.utf8.count <= 8192 { bounded = raw } else { limit("types"); bounded = "" }
+            if typeNameFor == nil, typeNames.count < 256 { typeNames[identity] = bounded }
+            return bounded
+        }
+        if roots.count > 64 { limit("roots") }
         let began = ProcessInfo.processInfo.systemUptime
-        while cursor < queue.count {
-            guard result.visited < max(0, min(nodes, 256)),
-                  ProcessInfo.processInfo.systemUptime - began < max(0, min(seconds, 0.012)) else {
-                result.truncated = true; break
-            }
-            let (value, level) = queue[cursor]; cursor += 1; result.visited += 1
-            let typeName = typeNameFor(value)
+        while !pending.isEmpty {
+            guard result.visited < max(0, min(nodes, 256)) else { limit("nodes"); break }
+            guard ProcessInfo.processInfo.systemUptime - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
+            let (value, level) = pending.removeLast(); result.visited += 1
+            let typeName = name(value)
             result.tags.formUnion(CKM3UProbePolicy.tags(typeName: typeName))
-            guard CKM3UProbePolicy.traversable(typeName), level < max(0, min(depth, 18)) else { continue }
+            guard CKM3UProbePolicy.traversable(typeName) else { continue }
+            guard level < max(0, min(depth, 18)) else { limit("depth"); continue }
             let mirror = Mirror(reflecting: value)
             if mirror.displayStyle == .class {
                 guard objects.insert(ObjectIdentifier(value as AnyObject)).inserted else { continue }
             }
             var current: Mirror? = mirror
             var ancestors = 0
+            var children: [(value: Any, priority: Int, order: Int)] = []
             while let reflected = current, ancestors < 4 {
-                for child in reflected.children.prefix(32) {
+                for (index, child) in reflected.children.prefix(33).enumerated() {
+                    if index == 32 { limit("children"); break }
+                    guard ProcessInfo.processInfo.systemUptime - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
                     if let name = child.label {
                         if CKM3UProbePolicy.fields.contains(name) { result.fields.insert(name) }
                         if reflected.displayStyle == .enum, let tag = CKM3UProbePolicy.cases[name],
                            typeName.hasPrefix("MonPlayer.AppRoute") { result.tags.insert(tag) }
                     }
-                    let childType = typeNameFor(child.value)
-                    if CKM3UProbePolicy.traversable(childType), queue.count < 512 {
-                        queue.append((child.value, level + 1))
+                    let childType = name(child.value)
+                    if CKM3UProbePolicy.traversable(childType) {
+                        children.append((child.value, priority(label: child.label, typeName: childType), children.count))
                     }
                 }
                 current = reflected.superclassMirror; ancestors += 1
+                if result.limits.contains("time") { break }
             }
+            if ancestors == 4 && current != nil { limit("ancestors") }
+            let ordered = children.sorted { ($0.priority, $0.order) < ($1.priority, $1.order) }
+            let available = max(0, 512 - scheduled)
+            if ordered.count > available { limit("queue") }
+            let next = ordered.prefix(available)
+            scheduled += next.count
+            // Descend the selected root/router chain before unrelated sibling views.
+            pending.append(contentsOf: next.reversed().map { ($0.value, level + 1) })
         }
         return result
     }

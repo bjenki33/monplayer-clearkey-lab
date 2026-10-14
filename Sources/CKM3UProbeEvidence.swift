@@ -12,6 +12,7 @@ struct CKM3UProbeEvidenceRecord: Codable {
     let limited: Bool?
     let tags: [String]
     let fields: [String]
+    let limits: [String]
 
     init(event: CKM3UProbeEvidenceEvent, ticks: Int, seconds: Double, snapshot: CKM3UProbeSnapshot?) {
         self.event = event
@@ -21,6 +22,7 @@ struct CKM3UProbeEvidenceRecord: Codable {
         let tags = (snapshot?.tags ?? []).intersection(allowedTags)
         self.tags = tags.sorted()
         fields = (snapshot?.fields ?? []).intersection(CKM3UProbePolicy.fields).sorted()
+        limits = (snapshot?.limits ?? []).intersection(CKM3UProbeReflection.limitNames).sorted()
         branch = snapshot.map { _ in CKM3UProbePolicy.branch(tags) }
         nodes = snapshot.map { max(0, min($0.visited, 256)) }
         limited = snapshot?.truncated
@@ -28,7 +30,7 @@ struct CKM3UProbeEvidenceRecord: Codable {
 }
 
 struct CKM3UProbeEvidenceReport: Codable {
-    let schema = 1
+    let schema = 2
     let observationOnly = true
     var build = max(0, min(Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0") ?? 0, 999999999))
     var state = CKM3UProbeEvidenceEvent.started
@@ -38,7 +40,7 @@ struct CKM3UProbeEvidenceReport: Codable {
 }
 
 final class CKM3UProbeEvidence {
-    static let fileName = "CKM3URouteProbe-v1.json"
+    static let fileName = "CKM3URouteProbe-v2.json"
     static let maximumBytes = 65536
     static var defaultURL: URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
