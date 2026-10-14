@@ -6,6 +6,48 @@ import XCTest
 
 final class CKOriginalPlayerTests: XCTestCase {
     @MainActor
+    func testOrdinaryOwnedHTTPHLSActuallyPlays() async throws {
+        try await controlNativeHLS(URL(string: "http://127.0.0.1:18761/plainhls/index.m3u8")!, label: "fixtureHTTP")
+    }
+
+    @MainActor
+    func testOwnedPreMuxedFiniteNativeRingActuallyPlays() async throws {
+        try await controlNativeRing(finite: true)
+    }
+
+    @MainActor
+    func testOwnedPreMuxedLiveNativeRingActuallyPlays() async throws {
+        try await controlNativeRing(finite: false)
+    }
+
+    @MainActor
+    private func controlNativeRing(finite: Bool) async throws {
+        let store = CKNativeStore(), bundle = Bundle(for: CKOriginalPlayerTests.self)
+        let directory = try XCTUnwrap(bundle.url(forResource: "plainhls", withExtension: nil, subdirectory: "Fixtures"))
+        let initName = try store.initialize(Data(contentsOf: directory.appendingPathComponent("init.mp4")), generation: 0)
+        for index in 0..<6 {
+            try store.append(Data(contentsOf: directory.appendingPathComponent("segment\(index).m4s")), seconds: 2,
+                             initName: initName, discontinuity: false)
+        }
+        if finite { store.finish() }
+        let server = try CKNativeHTTP(store: store); defer { server.stop() }
+        try await controlNativeHLS(server.url, label: finite ? "finiteRing" : "liveRing")
+        print("OWNED HLS CONTROL REQUESTS: \(store.stats)")
+    }
+
+    @MainActor
+    private func controlNativeHLS(_ url: URL, label: String) async throws {
+        let player = AVPlayer(url: url), item = try XCTUnwrap(player.currentItem)
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
+        player.play()
+        for _ in 0..<200 {
+            if item.status == .readyToPlay && player.currentTime().seconds > 0.5 { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        print("OWNED HLS CONTROL [\(label)]: status \(item.status.rawValue); clock \(player.currentTime().seconds); error \((item.error as NSError?)?.code ?? 0)")
+        XCTAssertEqual(item.status, .readyToPlay); XCTAssertGreaterThan(player.currentTime().seconds, 0.5)
+    }
+    @MainActor
     func testOrdinaryNativeLocalMovieActuallyPlaysWithHooksInstalled() async throws {
         let item = try XCTUnwrap(CKRuntime.placeholderItem())
         let player = AVPlayer(playerItem: item)

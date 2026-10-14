@@ -102,6 +102,7 @@ final class CKNativeHTTP {
     private let lock = NSLock()
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var endpoint: URL?
+    private var playlistReplies = 0
     var url: URL { endpoint! }
     init(store: CKNativeStore) throws {
         self.store = store
@@ -176,6 +177,10 @@ final class CKNativeHTTP {
         let phrase = [200: "OK", 206: "Partial Content", 404: "Not Found", 410: "Gone", 416: "Range Not Satisfiable", 503: "Service Unavailable"][status] ?? "Error"
         var data = Data("HTTP/1.1 \(status) \(phrase)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nAccept-Ranges: bytes\r\n\(extra)Connection: close\r\n\r\n".utf8)
         if first[0] != "HEAD" { data.append(body) }
+        if String(first[1]).hasSuffix(".m3u8") {
+            lock.lock(); playlistReplies += 1; let report = playlistReplies <= 4; lock.unlock()
+            if report { CKDiagnostic.trace("native playlist reply head=\(first[0] == "HEAD") range=\(!ranges.isEmpty) status=\(status) bytes=\(body.count)") }
+        }
         // Send a TCP end-of-stream instead of resetting a just-written response.
         connection.send(content: data, contentContext: .finalMessage, isComplete: true,
                         completion: .contentProcessed { [weak self] error in

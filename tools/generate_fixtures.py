@@ -49,6 +49,15 @@ def adaptation(path, prefix, new_id, kid):
 
 def main(root):
     root = Path(root)
+    native = root / 'plainhls'
+    native.mkdir(parents=True, exist_ok=True)
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25',
+           '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+           '-t', '12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '50',
+           '-c:a', 'aac', '-ac', '2', '-f', 'hls', '-hls_time', '2',
+           '-hls_segment_type', 'fmp4', '-hls_playlist_type', 'vod',
+           '-hls_fmp4_init_filename', 'init.mp4',
+           '-hls_segment_filename', native / 'segment%d.m4s', native / 'index.m3u8')
     video = ['-f', 'lavfi', '-i', 'color=red:size=128x72:rate=10', '-t', '3',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '10', '-an']
     dash(root / 'manifest.mpd', video, KID1, KEY1)
