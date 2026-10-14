@@ -117,6 +117,8 @@ jobs:
             focused_tests=(
               -only-testing:CKTests/CKOriginalPlayerTests
               -only-testing:CKTests/CKLiveEngineTests/testNativeImportedPlaylistAndOriginalAVPlayerRouteStartMovingStereoEngine
+              -only-testing:CKTests/CKLiveEngineTests/testOriginalAVPlayerPreloadedKeyChangeKeepsItemAndMovingFrames
+              -only-testing:CKTests/CKLiveEngineTests/testOriginalAVPlayerLicensedKeyChangeKeepsItemAndMovingFrames
             )
           fi
           if [[ "$OWNED_ASAN" == "true" ]]; then

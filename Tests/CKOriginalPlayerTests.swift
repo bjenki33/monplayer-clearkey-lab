@@ -314,6 +314,23 @@ final class CKOriginalPlayerTests: XCTestCase {
             XCTAssertEqual(CKNativeStartup.liveDelay(Data(xml.utf8)), expected)
         }
     }
+    func testNativeTimelineIdentityIncludesPeriodAndEpoch() throws {
+        func identity(_ epoch: String, _ period: String) -> CKNativeStartup.Timeline? {
+            CKNativeStartup.timeline(Data("<MPD type=\"dynamic\" availabilityStartTime=\"\(epoch)\"><Period id=\"\(period)\" start=\"PT0S\"/></MPD>".utf8))
+        }
+        let old = try XCTUnwrap(identity("2026-10-14T10:00:00Z", "owned"))
+        XCTAssertEqual(old, identity("2026-10-14T10:00:00Z", "owned"))
+        XCTAssertNotEqual(old, identity("2026-10-14T10:00:01Z", "owned"))
+        XCTAssertNotEqual(old, identity("2026-10-14T10:00:00Z", "next"))
+    }
+    func testNativeUnknownOrAmbiguousTimelineCannotSkipByOldTimestamp() {
+        for xml in ["<MPD type=\"dynamic\"><Period/></MPD>",
+                    "<MPD type=\"dynamic\" availabilityStartTime=\"invalid\"><Period/></MPD>",
+                    "<MPD type=\"dynamic\" availabilityStartTime=\"2026-10-14T10:00:00Z\"><Period/><Period/></MPD>",
+                    "<wrapper><MPD type=\"dynamic\" availabilityStartTime=\"2026-10-14T10:00:00Z\"><Period/></MPD></wrapper>"] {
+            XCTAssertNil(CKNativeStartup.timeline(Data(xml.utf8)))
+        }
+    }
     func testNativeWarmupWaitWakesWhenDurationReserveArrives() async throws {
         let store = try seeded(count: 2)
         defer { store.close() }

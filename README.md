@@ -249,6 +249,11 @@ a12-30second default bound,capped by an advertised shorter DVR window,so long
 GOPs can prime from already-published media. Invalid,
 unknown or finite metadata retains12s;audio duration cannot inflate the hint.
 Legacy engine/core defaults and normal short-GOP sources remain unchanged.
+On an authorized key update within the same validated live epoch/period,the
+remux worker resumes at its last completely published video-keyframe boundary,
+not the historical source point it has already appended. Unknown/changed or
+multi-period epochs never inherit this boundary. The same original AVPlayerItem
+and normal HLS initialization/discontinuity semantics are retained.
 
 ## CK11 Stage2B Fragment-Open Transport Recovery
 

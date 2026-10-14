@@ -1,6 +1,28 @@
 import Foundation
 
 enum CKNativeStartup {
+    struct Timeline: Equatable {
+        let availability: String
+        let periodID: String?
+        let periodStart: String?
+    }
+    static func timeline(_ data: Data) -> Timeline? {
+        guard data.count <= 2 * 1024 * 1024 else { return nil }
+        let text = String(decoding: data, as: UTF8.self).uppercased()
+        guard !text.contains("<!DOCTYPE"), !text.contains("<!ENTITY") else { return nil }
+        let reader = Reader(), parser = XMLParser(data: data)
+        parser.shouldResolveExternalEntities = false; parser.delegate = reader
+        guard parser.parse(), reader.live, reader.periods == 1, let availability = reader.availability,
+              availability.utf8.count <= 128,
+              (reader.periodID?.utf8.count ?? 0) <= 128, (reader.periodStart?.utf8.count ?? 0) <= 128 else { return nil }
+        let dates = ISO8601DateFormatter()
+        dates.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if dates.date(from: availability) == nil {
+            dates.formatOptions = [.withInternetDateTime]
+            guard dates.date(from: availability) != nil else { return nil }
+        }
+        return Timeline(availability: availability, periodID: reader.periodID, periodStart: reader.periodStart)
+    }
     static func liveDelay(_ data: Data) -> Int {
         guard data.count <= 2 * 1024 * 1024 else { return 12 }
         let text = String(decoding: data, as: UTF8.self).uppercased()
@@ -20,14 +42,22 @@ enum CKNativeStartup {
         var live = false
         var maximum: Double?
         var window: TimeInterval?
+        var availability: String?, periodID: String?, periodStart: String?
+        var periods = 0
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                     qualifiedName: String?, attributes: [String: String]) {
             guard scopes.count < 64 else { parser.abortParsing(); return }
             let local = name.split(separator: ":").last.map(String.init) ?? ""
+            if scopes.isEmpty && local != "MPD" { parser.abortParsing(); return }
             var scope = scopes.last ?? Scope()
             if local == "MPD" {
                 live = attributes["type"] == "dynamic"
                 window = attributes["timeShiftBufferDepth"].flatMap(CKRotationCadence.seconds)
+                availability = attributes["availabilityStartTime"]
+            }
+            if local == "Period" {
+                guard scopes.count == 1 else { parser.abortParsing(); return }
+                periods += 1; periodID = attributes["id"]; periodStart = attributes["start"]
             }
             if local == "AdaptationSet" || local == "Representation" {
                 scope.video = scope.video || attributes["contentType"] == "video" ||

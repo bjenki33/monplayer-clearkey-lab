@@ -17,6 +17,9 @@ final class CKNativeRemux {
     private let headers: [String: String]
     private var generation = 0, stopped = false, wantsPlaying = false
     private var didFinish = false
+    // Accessed only by the serial remux worker,not the key-refresh task.
+    private var timeline: CKNativeStartup.Timeline?
+    private var publishedBoundary: Int64?
     var finished: Bool { condition.lock(); defer { condition.unlock() }; return didFinish }
     init(source: CKResolvedSource, headers: [String: String], store: CKNativeStore) {
         self.source = source; self.headers = headers; self.store = store
@@ -58,6 +61,10 @@ final class CKNativeRemux {
         }
     }
     private func remux(_ source: CKResolvedSource, generation: Int) throws -> Bool {
+        let nextTimeline = CKNativeStartup.timeline(source.data)
+        let resumeAfter = generation > 0 && nextTimeline != nil && timeline == nextTimeline ? publishedBoundary : nil
+        if timeline != nextTimeline { publishedBoundary = nil }
+        timeline = nextTimeline
         let gate = CKRemuxGate(worker: self, generation: generation)
         let opaque = Unmanaged.passRetained(gate).toOpaque()
         defer { Unmanaged<CKRemuxGate>.fromOpaque(opaque).release() }
@@ -188,13 +195,19 @@ final class CKNativeRemux {
             guard timestamp != Int64.min else { throw CKNativeFailure.transport }
             let micros = av_rescale_q(timestamp, sourceStream.pointee.time_base, microseconds)
             let keyframe = index == video && p.pointee.flags & AV_PKT_FLAG_KEY != 0
-            if origin == nil { guard keyframe else { continue }; origin = micros }
+            if origin == nil {
+                // Reopening the same DASH epoch after key refresh must not
+                // append already-published historical frames a second time.
+                guard keyframe, resumeAfter.map({ micros >= $0 }) ?? true else { continue }
+                origin = micros
+            }
             guard let origin, micros >= origin else { continue }
             let seconds = Double(micros - origin) / 1_000_000
             if keyframe, hasVideo, seconds - segmentStart >= 1.8 {
                 try check(av_write_frame(out, nil))
                 try store.append(drain(out), seconds: seconds - segmentStart, initName: initName,
                                  discontinuity: generation > 0 && firstSegment)
+                publishedBoundary = micros
                 firstSegment = false; segmentStart = seconds; hasVideo = false
                 try check(avio_open_dyn_buf(&out.pointee.pb))
             }
