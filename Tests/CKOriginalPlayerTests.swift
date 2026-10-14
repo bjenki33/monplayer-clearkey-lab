@@ -39,6 +39,7 @@ final class CKOriginalPlayerTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         let latency = try XCTUnwrap(firstFrame, "actual native frame must arrive,not just ready metadata")
+        XCTAssertLessThan(latency, 8, "duration-based startup must reach an actual owned frame within8s")
         let clock = player.currentTime().seconds
         for _ in 0..<40 {
             if let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
@@ -282,6 +283,30 @@ final class CKOriginalPlayerTests: XCTestCase {
         XCTAssertEqual(store.count, 7); XCTAssertFalse(store.ready)
         try store.append(Data([1]), seconds: 1.8, initName: name, discontinuity: false)
         XCTAssertTrue(store.ready); store.close()
+    }
+    func testNativeLiveLookbackUsesVideoTimelineDurationNotAudio() {
+        let xml = """
+        <MPD type="dynamic"><Period>
+        <AdaptationSet contentType="video"><Representation><SegmentTemplate timescale="1000">
+        <SegmentTimeline><S d="4000" r="8"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>
+        <AdaptationSet contentType="audio"><Representation><SegmentTemplate timescale="1" duration="12"/></Representation></AdaptationSet>
+        </Period></MPD>
+        """
+        XCTAssertEqual(CKNativeStartup.liveDelay(Data(xml.utf8)), 20)
+    }
+    func testNativeLiveLookbackKeepsShortSourceBaselineAndBoundsLongSources() {
+        for (seconds, expected) in [(2, 12), (4, 20), (6, 30), (8, 30)] {
+            let xml = "<MPD type=\"dynamic\"><Period><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate duration=\"\(seconds)\"/></AdaptationSet></Period></MPD>"
+            XCTAssertEqual(CKNativeStartup.liveDelay(Data(xml.utf8)), expected)
+        }
+    }
+    func testNativeLiveLookbackRejectsInvalidUnknownAndFiniteMetadata() {
+        for xml in ["not XML", "<MPD type=\"static\"/>", "<MPD type=\"dynamic\"/>",
+                    "<!DOCTYPE MPD><MPD type=\"dynamic\"/>",
+                    "<MPD type=\"dynamic\"><AdaptationSet contentType=\"video\"><SegmentTemplate timescale=\"0\" duration=\"4\"/></AdaptationSet></MPD>"] {
+            XCTAssertEqual(CKNativeStartup.liveDelay(Data(xml.utf8)), 12)
+        }
+        XCTAssertEqual(CKNativeStartup.liveDelay(Data(repeating: 32, count: 2 * 1024 * 1024 + 1)), 12)
     }
     func testNativeWarmupWaitWakesWhenDurationReserveArrives() async throws {
         let store = try seeded(count: 2)

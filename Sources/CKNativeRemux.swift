@@ -73,7 +73,7 @@ final class CKNativeRemux {
         var values = source.keys.formatOptions
         // Native HLS starts three target durations behind its published edge.
         // Prime its window from already-published input rather than future media.
-        values.merge(["rw_timeout": "20000000", "tls_verify": "1", "ck_live_delay": "12",
+        values.merge(["rw_timeout": "20000000", "tls_verify": "1", "ck_live_delay": String(CKNativeStartup.liveDelay(source.data)),
                       "ck_fragment_retry": "1", "ck_fragment_resume": "1",
                       "protocol_whitelist": "http,https,tcp,tls,crypto,httpproxy"]) { _, new in new }
         if let selection { values["ck_video_representation"] = selection.id }
