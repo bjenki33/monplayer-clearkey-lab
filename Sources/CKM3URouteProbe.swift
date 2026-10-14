@@ -81,7 +81,7 @@ struct CKM3UProbeSnapshot: Equatable {
 }
 
 enum CKM3UProbeReflection {
-    static let limitNames: Set<String> = ["roots", "nodes", "time", "depth", "children", "ancestors", "queue", "types"]
+    static let limitNames: Set<String> = Set(["roots", "nodes", "time", "depth", "children", "ancestors", "queue", "types"])
         .union(CKM3UFocusedRouteReflection.limitNames)
     private static func priority(label: String?, typeName: String) -> Int {
         if ["rootView", "_rootView", "root", "appRouter", "_appRouter", "router", "_router",
