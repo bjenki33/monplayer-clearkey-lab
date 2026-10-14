@@ -308,6 +308,12 @@ final class CKOriginalPlayerTests: XCTestCase {
         }
         XCTAssertEqual(CKNativeStartup.liveDelay(Data(repeating: 32, count: 2 * 1024 * 1024 + 1)), 12)
     }
+    func testNativeLiveLookbackRespectsAdvertisedDVRWindow() {
+        for (window, expected) in [("PT10S", 10), ("PT30S", 20), ("invalid", 20)] {
+            let xml = "<MPD type=\"dynamic\" timeShiftBufferDepth=\"\(window)\"><Period><AdaptationSet contentType=\"video\"><SegmentTemplate duration=\"4\"/></AdaptationSet></Period></MPD>"
+            XCTAssertEqual(CKNativeStartup.liveDelay(Data(xml.utf8)), expected)
+        }
+    }
     func testNativeWarmupWaitWakesWhenDurationReserveArrives() async throws {
         let store = try seeded(count: 2)
         defer { store.close() }

@@ -10,7 +10,8 @@ enum CKNativeStartup {
         guard parser.parse(), reader.live, let duration = reader.maximum else { return 12 }
         // Three output GOPs need the following input keyframe to close. Allow
         // one more source fragment for DASH's edge/rounding,not future media.
-        return min(30, max(12, Int(ceil(duration * 5))))
+        let limit = reader.window.map { Int(min(30, max(1, floor($0)))) } ?? 30
+        return min(limit, max(12, Int(ceil(duration * 5))))
     }
 
     private final class Reader: NSObject, XMLParserDelegate {
@@ -18,12 +19,16 @@ enum CKNativeStartup {
         var scopes: [Scope] = []
         var live = false
         var maximum: Double?
+        var window: TimeInterval?
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                     qualifiedName: String?, attributes: [String: String]) {
             guard scopes.count < 64 else { parser.abortParsing(); return }
             let local = name.split(separator: ":").last.map(String.init) ?? ""
             var scope = scopes.last ?? Scope()
-            if local == "MPD" { live = attributes["type"] == "dynamic" }
+            if local == "MPD" {
+                live = attributes["type"] == "dynamic"
+                window = attributes["timeShiftBufferDepth"].flatMap(CKRotationCadence.seconds)
+            }
             if local == "AdaptationSet" || local == "Representation" {
                 scope.video = scope.video || attributes["contentType"] == "video" ||
                     attributes["mimeType"]?.hasPrefix("video/") == true

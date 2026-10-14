@@ -245,7 +245,8 @@ stream-copy quality and the original UI are unchanged. Owned two/four-second
 live fixtures measure first decoded frame and continuing stereo playback;
 physical-device latency and long soaks remain separate release checks.
 The native-only input lookback follows declared video-fragment duration with
-a12-30second bound,so long GOPs can prime from already-published media. Invalid,
+a12-30second default bound,capped by an advertised shorter DVR window,so long
+GOPs can prime from already-published media. Invalid,
 unknown or finite metadata retains12s;audio duration cannot inflate the hint.
 Legacy engine/core defaults and normal short-GOP sources remain unchanged.
 
