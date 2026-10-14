@@ -74,14 +74,14 @@ final class CKNativeStore {
         condition.broadcast()
     }
     func finish() { condition.lock(); terminal = true; condition.broadcast(); condition.unlock() }
-    func response(path: String, wait: TimeInterval = 25) -> (Int, String, Data) {
+    func response(path: String, wait: TimeInterval = 25, recordRequest: Bool = true) -> (Int, String, Data) {
         guard path.hasPrefix("/\(token)/"), !path.contains("%"), !path.contains("?"), !path.contains("..") else {
             return (404, "text/plain", Data())
         }
         let name = String(path.dropFirst(token.count + 2))
         condition.lock(); defer { condition.unlock() }
         if name == "index.m3u8" {
-            manifestRequests += 1
+            if recordRequest { manifestRequests += 1 }
             guard !failed, !cancelled else { return (410, "text/plain", Data()) }
             // Classify as HLS immediately;media preparation may legitimately wait.
             // The single variant's startup bandwidth is an estimate,not an ABR ladder.
@@ -90,7 +90,7 @@ final class CKNativeStore {
             return (200, "application/vnd.apple.mpegurl", Data(text.utf8))
         }
         if name == "media.m3u8" {
-            manifestRequests += 1
+            if recordRequest { manifestRequests += 1 }
             let deadline = Date(timeIntervalSinceNow: wait)
             while segments.count < Self.startupSegments && !terminal { if !condition.wait(until: deadline) { break } }
             guard terminal || segments.count >= Self.startupSegments else { return (503, "text/plain", Data()) }
@@ -176,7 +176,12 @@ final class CKNativeHTTP {
         guard let text = String(data: request, encoding: .utf8) else { connection.cancel(); return }
         let lines = text.components(separatedBy: "\r\n"), first = lines[0].split(separator: " ")
         guard first.count == 3, ["GET", "HEAD"].contains(String(first[0])) else { connection.cancel(); return }
-        var (status, mime, body) = store.response(path: String(first[1]))
+        let path = String(first[1])
+        var (status, mime, body) = store.response(path: path, wait: 0)
+        if status == 503, first[0] == "GET", path.hasSuffix("/media.m3u8") {
+            warmPlaylist(connection, path: path)
+            return
+        }
         var extra = ""
         let ranges = lines.dropFirst().filter { $0.lowercased().hasPrefix("range:") }
         if status == 200, !String(first[1]).hasSuffix(".m3u8"), let range = ranges.first {
@@ -203,11 +208,40 @@ final class CKNativeHTTP {
             if report { CKDiagnostic.trace("native playlist reply head=\(first[0] == "HEAD") range=\(!ranges.isEmpty) status=\(status) bytes=\(body.count)") }
         }
         // Send a TCP end-of-stream instead of resetting a just-written response.
+        finish(connection, data: data)
+    }
+    private func finish(_ connection: NWConnection, data: Data) {
         connection.send(content: data, contentContext: .finalMessage, isComplete: true,
                         completion: .contentProcessed { [weak self] error in
             if error != nil { connection.cancel(); return }
             self?.queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
         })
+    }
+    private func warmPlaylist(_ connection: NWConnection, path: String) {
+        let prefix = Data("#EXTM3U\n#EXT-X-VERSION:7\n".utf8)
+        var header = Data("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+        header.append(chunk(prefix))
+        connection.send(content: header, completion: .contentProcessed { error in if error != nil { connection.cancel() } })
+        let deadline = ProcessInfo.processInfo.systemUptime + 25
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if case .cancelled = connection.state { return }
+            let (status, _, body) = store.response(path: path, wait: 0.8, recordRequest: false)
+            if status == 200, body.starts(with: prefix) {
+                var final = chunk(Data(body.dropFirst(prefix.count)))
+                final.append(Data("0\r\n\r\n".utf8)); finish(connection, data: final)
+                return
+            }
+            guard status == 503 else { connection.cancel(); return }
+            // Legal HLS comments keep progress alive;never invent media segments.
+            connection.send(content: chunk(Data("# preparing\n".utf8)), completion: .contentProcessed { error in
+                if error != nil { connection.cancel() }
+            })
+        }
+        connection.cancel()
+    }
+    private func chunk(_ body: Data) -> Data {
+        var result = Data("\(String(body.count, radix: 16))\r\n".utf8)
+        result.append(body); result.append(Data("\r\n".utf8)); return result
     }
     deinit { listener.cancel() }
 }

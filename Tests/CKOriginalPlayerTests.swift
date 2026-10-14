@@ -167,6 +167,23 @@ final class CKOriginalPlayerTests: XCTestCase {
         let (_, invalid) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((invalid as? HTTPURLResponse)?.statusCode, 416)
     }
+    func testNativeWarmPlaylistStreamsOnlyRealCompleteSegments() async throws {
+        let store = try seeded(count: 0), server = try CKNativeHTTP(store: store)
+        defer { server.stop() }
+        let seed = Task.detached {
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            for _ in 0..<6 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
+        }
+        let url = server.url.deletingLastPathComponent().appendingPathComponent("media.m3u8")
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try await seed.value
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(text.hasPrefix("#EXTM3U\n#EXT-X-VERSION:7\n"))
+        XCTAssertEqual(text.components(separatedBy: "#EXTM3U").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "#EXTINF:").count - 1, 6)
+        XCTAssertTrue(text.contains("# preparing\n")); XCTAssertFalse(text.contains("#EXT-X-ENDLIST"))
+    }
     @MainActor
     func testOriginalItemIdentityStatusAndPlayPauseRemainNative() async throws {
         _ = try await CKNativeFixtures.load("nativeidentity")

@@ -105,7 +105,9 @@ final class CKNativeRemux {
         }
         let audioParameters = audio >= 0 ? streams[Int(audio)]?.pointee.codecpar : nil
         let declared = selection?.bandwidth ?? videoParameters.pointee.bit_rate
-        let total = declared + max(0, audioParameters?.pointee.bit_rate ?? 0)
+        let videoRate = max(0, min(1_000_000_000, declared))
+        let audioRate = max(0, min(1_000_000_000, audioParameters?.pointee.bit_rate ?? 0))
+        let total = min(1_000_000_000, videoRate + audioRate)
         var codecs: String?
         if videoParameters.pointee.codec_id == AV_CODEC_ID_H264,
            videoParameters.pointee.extradata_size >= 4, let bytes = videoParameters.pointee.extradata, bytes[0] == 1 {
