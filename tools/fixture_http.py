@@ -32,12 +32,16 @@ TRANSPORT = {}
 SEQUENCE_BASE = 895000000
 
 
+def live_source(session):
+    return 'live-longgop' if session.startswith('nativelonggop') else 'live-source'
+
+
 def live_manifest(session):
     with SESSION_LOCK:
         state = SESSIONS.setdefault(session, {'clock': time.monotonic() - 120, 'wall': time.time() - 120, 'ages': {}})
         clock, wall = state['clock'], state['wall']
     elapsed = time.monotonic() - clock
-    tree = ET.parse(ROOT / 'live-source/manifest.mpd')
+    tree = ET.parse(ROOT / live_source(session) / 'manifest.mpd')
     root = tree.getroot()
     with SESSION_LOCK:
         rotated = state.get('rotated', False)
@@ -94,7 +98,7 @@ def live_segment(session, media):
     if not match:
         return True
     group, number = match.group(1), int(match.group(2)) - SEQUENCE_BASE
-    tree = ET.parse(ROOT / f'live-source/{group}/manifest.mpd')
+    tree = ET.parse(ROOT / live_source(session) / group / 'manifest.mpd')
     template = next(tree.getroot().iter(f'{{{NS}}}SegmentTemplate'))
     scale, current = int(template.get('timescale')), int(template.get('startNumber', '1'))
     timestamp = 0
@@ -517,7 +521,7 @@ class Handler(BaseHTTPRequestHandler):
                 match = re.fullmatch(r'(video|audio|rotatedvideo)/chunk-stream0-(\d+)\.m4s', media)
                 if match:
                     media = f'{match.group(1)}/chunk-stream0-{int(match.group(2))-SEQUENCE_BASE:05d}.m4s'
-                relative = 'live-source/' + media
+                relative = live_source(session) + '/' + media
             else:
                 relative = path.removeprefix('/gzip/') if path.startswith('/gzip/') else '_missing_'
             target = (ROOT / relative).resolve()

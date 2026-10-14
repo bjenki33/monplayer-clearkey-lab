@@ -1,5 +1,6 @@
 """Generate only owned colors/sine waves with published synthetic test keys."""
 import copy
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -116,6 +117,21 @@ def main(root):
     live_video = live_period.find(f'{{{NS}}}AdaptationSet/{{{NS}}}Representation')
     live_video.set('id', 'live-selected'); live_video.set('bandwidth', '2000000')
     live_manifest.write(live / 'manifest.mpd', encoding='utf-8', xml_declaration=True)
+    long = root / 'live-longgop'
+    long_moving = ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25', '-t', '180',
+                   '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '100',
+                   '-keyint_min', '100', '-sc_threshold', '0', '-an']
+    dash(long / 'video/manifest.mpd', long_moving, KID1, KEY1)
+    shutil.copytree(live / 'audio', long / 'audio', dirs_exist_ok=True)
+    long_manifest = ET.parse(long / 'video/manifest.mpd')
+    long_period = long_manifest.getroot().find(f'{{{NS}}}Period')
+    for child in list(long_period):
+        long_period.remove(child)
+    long_period.append(adaptation(long / 'video/manifest.mpd', 'video/', 0, KID1))
+    long_period.append(adaptation(long / 'audio/manifest.mpd', 'audio/', 1, KID2))
+    long_video = long_period.find(f'{{{NS}}}AdaptationSet/{{{NS}}}Representation')
+    long_video.set('id', 'live-selected'); long_video.set('bandwidth', '2000000')
+    long_manifest.write(long / 'manifest.mpd', encoding='utf-8', xml_declaration=True)
     for directory in [root, multi / 'video', multi / 'audio']:
         assert any(b'tenc' in x.read_bytes() or b'senc' in x.read_bytes() for x in directory.glob('*.m4s')), 'fixture is not encrypted'
     assert (multi / 'audio-reference.f32').stat().st_size > 48000 * 4, 'missing owned audio reference'

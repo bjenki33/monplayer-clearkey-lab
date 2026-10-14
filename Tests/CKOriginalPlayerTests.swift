@@ -1,10 +1,82 @@
 import AVFoundation
+import CoreMedia
+import CoreVideo
 import Foundation
 import UIKit
 import XCTest
 @testable import CKBridge
 
 final class CKOriginalPlayerTests: XCTestCase {
+    @MainActor
+    func testOriginalPlayerStartupTimingOnOwnedTwoSecondLiveSource() async throws {
+        try await exerciseStartup("nativestartuplatency")
+    }
+
+    @MainActor
+    func testOriginalPlayerStartupTimingOnOwnedFourSecondLiveSource() async throws {
+        try await exerciseStartup("nativelonggopstartup")
+    }
+
+    @MainActor
+    private func exerciseStartup(_ name: String) async throws {
+        _ = try await CKNativeFixtures.load(name)
+        let began = ProcessInfo.processInfo.systemUptime
+        let player = AVPlayer(url: CKNativeFixtures.media(name))
+        let item = try XCTUnwrap(player.currentItem)
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ])
+        item.add(output)
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
+        player.play()
+        var firstFrame: TimeInterval?, frames: Set<UInt64> = []
+        while ProcessInfo.processInfo.systemUptime - began < 32 {
+            if item.status == .readyToPlay, player.timeControlStatus == .playing,
+               let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
+                firstFrame = ProcessInfo.processInfo.systemUptime - began
+                frames.insert(fingerprint(buffer)); break
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let latency = try XCTUnwrap(firstFrame, "actual native frame must arrive,not just ready metadata")
+        let clock = player.currentTime().seconds
+        for _ in 0..<40 {
+            if let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
+                frames.insert(fingerprint(buffer))
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let audio = item.tracks.filter { $0.isEnabled && $0.assetTrack?.mediaType == .audio }
+        let stereo = audio.compactMap(\.assetTrack).flatMap(\.formatDescriptions).contains {
+            CMAudioFormatDescriptionGetStreamBasicDescription($0 as! CMAudioFormatDescription)?.pointee.mChannelsPerFrame == 2
+        }
+        let statsURL = URL(string: "http://127.0.0.1:18761/live/\(name)/stats")!
+        let (data, _) = try await URLSession.shared.data(from: statsURL)
+        let stats = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Double])
+        print("OWNED ORIGINAL STARTUP [\(name)]: first frame \(latency)s; advance \(player.currentTime().seconds-clock)s; distinct frames \(frames.count); stereo \(stereo); ages \(stats)")
+        XCTAssertGreaterThan(player.currentTime().seconds-clock, 7)
+        XCTAssertGreaterThan(frames.count, 30); XCTAssertTrue(stereo)
+        XCTAssertEqual(stats["future_requests"] ?? 0, 0)
+        XCTAssertEqual(stats["expired_requests"] ?? 0, 0)
+        XCTAssertNil(CKRuntime.presentedController)
+    }
+
+    private func fingerprint(_ buffer: CVPixelBuffer) -> UInt64 {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let pointer = CVPixelBufferGetBaseAddress(buffer) else { return 0 }
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        let bytes = pointer.assumingMemoryBound(to: UInt8.self)
+        var hash: UInt64 = 1469598103934665603
+        for y in Swift.stride(from: 0, to: height, by: max(1, height / 12)) {
+            for x in Swift.stride(from: 0, to: width, by: max(1, width / 16)) {
+                hash = (hash ^ UInt64(bytes[y * stride + x * 4])) &* 1099511628211
+            }
+        }
+        return hash
+    }
+
     @MainActor
     func testOrdinaryOwnedHTTPHLSActuallyPlays() async throws {
         try await controlNativeHLS(URL(string: "http://127.0.0.1:18761/gzip/plainhls/index.m3u8")!, label: "fixtureHTTP")
