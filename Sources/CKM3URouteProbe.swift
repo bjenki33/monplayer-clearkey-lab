@@ -17,7 +17,7 @@ enum CKM3UProbePolicy {
     static let cases: [String: String] = [
         "providerM3UDetail": "case-m3u-provider", "groupM3UDetail": "case-m3u-group",
         "providerJsonDetail": "case-json-provider", "groupJsonDetail": "case-json-group",
-        "channelJsonDetail": "case-json-channel"
+        "channelJsonDetail": "case-json-channel", "player": "case-player", "streamLoading": "case-stream-loading"
     ]
     static let fields: Set<String> = [
         "rootView", "_rootView", "root", "host", "content", "storage", "_storage",
@@ -49,7 +49,8 @@ enum CKM3UProbePolicy {
         let json = tags.contains("json-provider") || tags.contains("json-group") || tags.contains("json-channel") ||
             tags.contains("case-json-provider") || tags.contains("case-json-group") || tags.contains("case-json-channel")
         if m3u && json { return "ambiguous" }
-        if tags.contains("player-screen") || tags.contains("player-screen-ipad") || tags.contains("player-controller") {
+        if tags.contains("player-screen") || tags.contains("player-screen-ipad") || tags.contains("player-controller") ||
+            tags.contains("case-player") || tags.contains("case-stream-loading") {
             return "player-candidate"
         }
         return m3u ? "m3u-candidate" : json ? "json-candidate" : "unknown"

@@ -26,6 +26,10 @@ final class CKM3URouteProbeTests: XCTestCase {
         XCTAssertEqual(CKM3UProbePolicy.branch(["json-provider"]), "json-candidate")
         XCTAssertEqual(CKM3UProbePolicy.branch(["m3u-channel-model"]), "unknown")
     }
+    func testM3UProbeOriginalPlayerRouteDoesNotIdentifyBrowserEntry() {
+        XCTAssertEqual(CKM3UProbePolicy.branch(["case-player", "case-m3u-provider"]), "player-candidate")
+        XCTAssertEqual(CKM3UProbePolicy.branch(["case-stream-loading"]), "player-candidate")
+    }
     func testM3UProbeNeverLogsSourceValues() {
         let secret = "owned-account-secret-do-not-log"
         let result = CKM3UProbeReflection.snapshot([secret, URL(string: "https://example.invalid/" + secret)!])
