@@ -178,6 +178,10 @@ static void CKLeaveCallback(NSURLSessionTask *task, SEL selector) {
 static void CKBindDelegate(id delegate) {
     if (!delegate) return;
     Class target = object_getClass(delegate);
+    // Do not add optional callbacks to Apple's AVFoundation/network delegates.
+    NSString *owner = [NSBundle bundleForClass:target].bundlePath;
+    NSString *application = NSBundle.mainBundle.bundlePath;
+    if (![owner isEqualToString:application] && ![owner hasPrefix:[application stringByAppendingString:@"/"]]) return;
     NSArray<NSString *> *selectors = @[@"URLSession:dataTask:didReceiveData:",
         @"URLSession:task:didCompleteWithError:", @"URLSession:downloadTask:didFinishDownloadingToURL:"];
     @synchronized(NSURLSession.class) {

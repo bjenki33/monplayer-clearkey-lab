@@ -157,7 +157,7 @@ final class CKNativeHTTP {
         var (status, mime, body) = store.response(path: String(first[1]))
         var extra = ""
         let ranges = lines.dropFirst().filter { $0.lowercased().hasPrefix("range:") }
-        if status == 200, let range = ranges.first {
+        if status == 200, !String(first[1]).hasSuffix(".m3u8"), let range = ranges.first {
             let total = body.count
             let field = range.dropFirst(6).trimmingCharacters(in: .whitespaces)
             let pieces = field.hasPrefix("bytes=") ? field.dropFirst(6).split(separator: "-", omittingEmptySubsequences: false) : []
@@ -176,7 +176,12 @@ final class CKNativeHTTP {
         let phrase = [200: "OK", 206: "Partial Content", 404: "Not Found", 410: "Gone", 416: "Range Not Satisfiable", 503: "Service Unavailable"][status] ?? "Error"
         var data = Data("HTTP/1.1 \(status) \(phrase)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nAccept-Ranges: bytes\r\n\(extra)Connection: close\r\n\r\n".utf8)
         if first[0] != "HEAD" { data.append(body) }
-        connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
+        // Send a TCP end-of-stream instead of resetting a just-written response.
+        connection.send(content: data, contentContext: .finalMessage, isComplete: true,
+                        completion: .contentProcessed { [weak self] error in
+            if error != nil { connection.cancel(); return }
+            self?.queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
+        })
     }
     deinit { listener.cancel() }
 }
