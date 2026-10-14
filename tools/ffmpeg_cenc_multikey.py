@@ -451,6 +451,53 @@ static int ck_open_fragment(DASHContext *c, struct representation *pls,
                        '            if (c->ck_fragment_retry)\n'
                        '                goto end; /* Bounded route fails rather than skipping forever. */\n'
                        '            av_log(v->parent, AV_LOG_WARNING, "Failed to open fragment of playlist\\n");\n')
+        before = ('    ret = reopen_demux_for_component(s, pls);\n'
+                  '    if (ret < 0) {\n'
+                  '        goto fail;\n'
+                  '    }\n')
+        text = replace(text, before,
+                       '    ret = reopen_demux_for_component(s, pls);\n'
+                       '    if (ret >= 0 && pls->ck_fragment_error < 0) {\n'
+                       '        DASHContext *c = s->priv_data;\n'
+                       '        if (c->ck_fragment_retry || c->ck_fragment_resume)\n'
+                       '            ret = pls->ck_fragment_error;\n'
+                       '    }\n'
+                       '    if (ret < 0) {\n'
+                       '        goto fail;\n'
+                       '    }\n')
+        signature = 'static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)\n'
+        terminal = r'''
+/* MOV may still have buffered metadata/packets after custom IO has failed.
+ * Surface opt-in terminal errors before unrelated tracks or cached packets. */
+static int ck_terminal_fragment_error(DASHContext *c)
+{
+    int i;
+    if (!c->ck_fragment_retry && !c->ck_fragment_resume)
+        return 0;
+    for (i = 0; i < c->n_videos; i++)
+        if (c->videos[i]->ck_fragment_error < 0)
+            return c->videos[i]->ck_fragment_error;
+    for (i = 0; i < c->n_audios; i++)
+        if (c->audios[i]->ck_fragment_error < 0)
+            return c->audios[i]->ck_fragment_error;
+    for (i = 0; i < c->n_subtitles; i++)
+        if (c->subtitles[i]->ck_fragment_error < 0)
+            return c->subtitles[i]->ck_fragment_error;
+    return 0;
+}
+
+'''
+        text = replace(text, signature, terminal + signature)
+        before = '    recheck_discard_flags(s, c->videos, c->n_videos);\n'
+        text = replace(text, before,
+                       '    ret = ck_terminal_fragment_error(c);\n'
+                       '    if (ret < 0)\n        return ret;\n' + before)
+        before = '        ret = av_read_frame(cur->ctx, pkt);\n'
+        text = replace(text, before, before +
+                       '        if (ck_terminal_fragment_error(c) < 0) {\n'
+                       '            av_packet_unref(pkt);\n'
+                       '            return ck_terminal_fragment_error(c);\n'
+                       '        }\n')
         old_delay = '            start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) - 60 * pls->fragment_timescale; // 60 seconds before end\n'
         text = replace(text, old_delay,
                        '            /* Opt-in near-live start avoids expired DVR-window fragments. */\n'

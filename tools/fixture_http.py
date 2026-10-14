@@ -143,6 +143,10 @@ class Handler(BaseHTTPRequestHandler):
             attempt = fault['attempts']
             stats = state['ages']
             stats['body_attempts'] = attempt
+            if attempt == 1:
+                stats['body_initial_wall'] = time.time()
+            elif attempt == 2:
+                stats['body_resume_wall'] = time.time()
             stats['body_wrong_headers'] = stats.get('body_wrong_headers', 0) + int(
                 self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None)
             match = re.fullmatch(r'bytes=(\d+)-(\d*)', self.headers.get('Range', ''))
@@ -512,6 +516,12 @@ class Handler(BaseHTTPRequestHandler):
             allowed = True
             if path.startswith('/live/'):
                 _, _, session, media = path.split('/', 3)
+                if session.startswith('body') and media.startswith('audio/'):
+                    with SESSION_LOCK:
+                        state = SESSIONS[session]
+                        if state.get('fault', {}).get('attempts', 0) > 1:
+                            stats = state['ages']
+                            stats['body_audio_after_resume'] = stats.get('body_audio_after_resume', 0) + 1
                 if session.startswith(('licensed', 'rotation', 'segment', 'body')) and (self.headers.get('X-Stream') != 'owned-stream' or self.headers.get('X-License') is not None):
                     self.send_error(403); return
                 allowed = live_segment(session, media)

@@ -124,6 +124,23 @@ class BackportTests(unittest.TestCase):
             self.assertEqual(http.count(f'av_freep(&s->{field});'), 2)
             self.assertIn(f'OFFSET({field}), AV_OPT_TYPE_STRING', http)
 
+    def testTerminalBodyErrorsAreForwardedBeforeAudioAndBufferedPackets(self):
+        dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
+        component = dash[dash.index('static int open_demux_for_component('):
+                         dash.index('static int is_common_init_section_exist(')]
+        self.assertLess(component.index('pls->ck_fragment_error < 0'),
+                        component.index('avformat_new_stream(s, NULL)'))
+        reader = dash[dash.index('static int dash_read_packet('):dash.index('static int dash_close(')]
+        self.assertLess(reader.index('ck_terminal_fragment_error(c)'),
+                        reader.index('recheck_discard_flags('))
+        self.assertLess(reader.index('av_packet_unref(pkt)'),
+                        reader.index('/* If we got a packet, return it */'))
+        guard = dash[dash.index('static int ck_terminal_fragment_error('):
+                     dash.index('static int dash_read_packet(')]
+        self.assertIn('!c->ck_fragment_retry && !c->ck_fragment_resume', guard)
+        for kind in ['videos', 'audios', 'subtitles']:
+            self.assertIn(f'c->{kind}[i]->ck_fragment_error', guard)
+
     def testLiveRefreshConvertsGlobalSequenceToRelativeAndBackForBothTracks(self):
         dash = transform('dashdec.c', self.originals['dashdec.c'].decode())
         for kind in ['video', 'audio']:

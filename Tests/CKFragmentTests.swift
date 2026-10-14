@@ -161,10 +161,23 @@ final class CKFragmentTests: XCTestCase {
             let session = "bodyinitialbudget" + mode, began = ProcessInfo.processInfo.systemUptime
             XCTAssertLessThan(try consumeBody(session), 0)
             let elapsed = ProcessInfo.processInfo.systemUptime - began
+            let returnedAt = Date().timeIntervalSince1970
             print("OWNED BODY DEADLINE [\(mode)]: \(elapsed)s")
             XCTAssertLessThan(elapsed, 6.5)
             let stats = try await CKFragmentFixtures.stats(session)
             XCTAssertEqual(stats["body_attempts"], 2)
+            let resumedAt = try XCTUnwrap(stats["body_resume_wall"])
+            print("OWNED BODY RESUME TO RETURN [\(mode)]: \(returnedAt - resumedAt)s")
+            XCTAssertEqual(stats["body_audio_after_resume"] ?? 0, 0)
         }
+    }
+
+    func testActualTerminalVideoBodyErrorDoesNotContinueAudioProbing() async throws {
+        let session = "bodyinitialterminalwrongtotal"
+        XCTAssertLessThan(try consumeBody(session), 0)
+        let stats = try await CKFragmentFixtures.stats(session)
+        XCTAssertEqual(stats["body_attempts"], 2)
+        XCTAssertEqual(stats["body_audio_after_resume"] ?? 0, 0)
+        XCTAssertEqual(stats["body_successes"] ?? 0, 0)
     }
 }
