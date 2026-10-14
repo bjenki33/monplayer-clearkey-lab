@@ -50,7 +50,9 @@ def dylib_command(path):
     return struct.pack('<IIIIII', 0xc, size, 24, 0, 0x10000, 0x10000) + name + bytes(size - 24 - len(name))
 
 
-def app_info(data, build, official=False):
+def app_info(data, build, official=False, m3u_route_probe=False):
+    if m3u_route_probe and not official:
+        raise ValueError('M3U route probe requires the existing official/native player identity')
     info = plistlib.loads(data)
     if official:
         info['CFBundleDisplayName'] = 'MonPlayer'
@@ -62,10 +64,14 @@ def app_info(data, build, official=False):
         info['CKNativeLinkMode'] = False
         info['CKOriginalPlayerMode'] = False
     info['CFBundleVersion'] = build
+    if m3u_route_probe:
+        info['CKM3URouteProbeMode'] = True
     return info
 
 
-def package(base, module, output, report, build, official=False):
+def package(base, module, output, report, build, official=False, m3u_route_probe=False):
+    if m3u_route_probe and not official:
+        raise ValueError('Do not package the M3U probe with a custom player')
     base, module, output, report = map(Path, (base, module, output, report))
     if not build.isascii() or not build.isdecimal() or int(build) <= 132002:
         raise ValueError('New experimental build must be explicitly supplied and newer than CK2')
@@ -93,7 +99,7 @@ def package(base, module, output, report, build, official=False):
             if name == app + 'MonPlayer':
                 data = add_command(data, dylib_command(LOAD_PATH)); changed.append(name)
             elif name == app + 'Info.plist':
-                info = app_info(data, build, official)
+                info = app_info(data, build, official, m3u_route_probe)
                 data = plistlib.dumps(info, fmt=plistlib.FMT_BINARY); changed.append(name)
             new.writestr(entry, data)
         for path in sorted(module.rglob('*')):
@@ -124,6 +130,7 @@ def package(base, module, output, report, build, official=False):
               'build': build, 'version': info['CFBundleShortVersionString'], 'bundle': info['CFBundleIdentifier'],
               'changed': changed, 'removed_signatures': removed, 'added': added,
               'official_native_links': official,
+              'm3u_route_probe': m3u_route_probe,
               'scope': 'unsigned arm64 integrated IPA; physical playback not established'}
     report.write_text(json.dumps(result, indent=2))
     print(json.dumps({k: v for k, v in result.items() if k not in ('removed_signatures', 'added')}, indent=2))
@@ -135,4 +142,5 @@ if __name__ == '__main__':
         parser.add_argument(field)
     parser.add_argument('--build', required=True)
     parser.add_argument('--official', action='store_true')
+    parser.add_argument('--m3u-route-probe', action='store_true')
     package(**vars(parser.parse_args()))

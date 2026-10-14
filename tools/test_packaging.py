@@ -61,6 +61,15 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(result['CKNativeLinkMode'])
         self.assertFalse(result['CKOriginalPlayerMode'])
 
+    def testM3UObservationRequiresNativeIdentityAndIsExplicitlyOptIn(self):
+        data = plistlib.dumps({'CFBundleIdentifier': 'dev.monplayer.bpfix.proxy'})
+        self.assertNotIn('CKM3URouteProbeMode', app_info(data, '132017', official=True))
+        with self.assertRaises(ValueError): app_info(data, '132017', m3u_route_probe=True)
+        result = app_info(data, '132017', official=True, m3u_route_probe=True)
+        self.assertTrue(result['CKM3URouteProbeMode'])
+        self.assertTrue(result['CKOriginalPlayerMode'])
+        self.assertEqual(result['CFBundleIdentifier'], 'dev.monplayer.bpfix.proxy')
+
 
 if __name__ == '__main__':
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(PackagingTests)

@@ -75,7 +75,8 @@ enum CKPresentation {
         navigation.modalPresentationStyle = .fullScreen
         top.present(navigation, animated: true) { opening = false }
     }
-    @objc public static func installPanel() {
+    @MainActor @objc public static func installPanel() {
+        CKM3URouteProbe.shared.start(info: Bundle.main.infoDictionary ?? [:])
         guard !CKPresentation.nativeLinks, panelButton == nil, let window = top()?.view.window else { return }
         let button = UIButton(type: .system)
         button.setTitle("CK TEST", for: .normal)
