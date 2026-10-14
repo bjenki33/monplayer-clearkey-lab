@@ -57,7 +57,6 @@ enum CKHTTPRetry {
         }
         var delay: TimeInterval = failedAttempt == 1 ? 0.25 : 0.75
         if let value = response?.value(forHTTPHeaderField: "Retry-After") {
-            // Never shorten a server's requested wait or guess a malformed value.
             guard let requested = retryAfter(value, now: now), requested <= 2 else { return nil }
             delay = max(delay, requested)
         }
@@ -145,8 +144,6 @@ enum CKHTTP {
         }, onCancel: { session.invalidateAndCancel() }) }
         catch {
             if Task.isCancelled { throw CancellationError() }
-            // URLSession may fail its async continuation before yielding the
-            // rejected redirect response; preserve the policy's safe taxonomy.
             if policy.wasDenied { throw CKFailure.unsafeRedirect }
             throw error
         }
@@ -229,6 +226,27 @@ enum CKSourceResolver {
     }
 
     static func resolve(_ channel: CKChannel) async throws -> CKResolvedSource {
+        var lastFailure: CKResolutionError?
+        for attempt in 0..<3 {
+            do {
+                return try await resolveOnce(channel)
+            } catch let failure as CKResolutionError {
+                guard isKidDesync(failure.underlying) else { throw failure }
+                lastFailure = failure
+                if attempt < 2 { try await Task.sleep(nanoseconds: 500_000_000) }
+            } catch {
+                throw error
+            }
+        }
+        throw lastFailure ?? CKResolutionError(stage: .key, underlying: CKFailure.missingLicenseKey)
+    }
+
+    private static func isKidDesync(_ error: Error) -> Bool {
+        if case CKFailure.missingLicenseKey = error { return true }
+        return false
+    }
+
+    private static func resolveOnce(_ channel: CKChannel) async throws -> CKResolvedSource {
         var stage = CKStage.key
         do {
             if let failure = channel.metadataFailure { throw failure }
@@ -256,6 +274,10 @@ enum CKSourceResolver {
             }
             stage = .manifest
             guard let manifest else { throw CKFailure.network }
+            if let freshIDs = try? CKManifestKeyIDs.read(manifest.0),
+               !freshIDs.isEmpty, !keys.contains(freshIDs) {
+                throw CKFailure.missingLicenseKey
+            }
             let url = try CKManifest.validatedURL(manifest.0, response: manifest.1, keySet: keys)
             try Task.checkCancellation()
             return CKResolvedSource(keys: keys, data: manifest.0, url: url, keySeconds: keySeconds, manifestSeconds: manifestSeconds)
