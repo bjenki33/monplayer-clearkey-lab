@@ -14,6 +14,8 @@ final class CKM3URouteProbeTests: XCTestCase {
         XCTAssertEqual(CKM3UProbePolicy.tags(typeName: "MonPlayer.ProviderM3UDetailScreen"), ["m3u-provider"])
         XCTAssertTrue(CKM3UProbePolicy.tags(typeName: "OtherApp.ProviderM3UDetailScreen").isEmpty)
         XCTAssertTrue(CKM3UProbePolicy.tags(typeName: "MonPlayer.ProviderM3UDetailScreenFake").isEmpty)
+        XCTAssertEqual(CKM3UProbePolicy.exactTags(typeName: "MonPlayer.AppRouter"), ["router"])
+        XCTAssertTrue(CKM3UProbePolicy.exactTags(typeName: "Swift.Optional<MonPlayer.AppRouter>").isEmpty)
     }
     func testM3UProbeGenericTypesDoNotClaimActiveBranchWhenBothExist() {
         let tags = CKM3UProbePolicy.tags(typeName:
@@ -192,6 +194,116 @@ final class CKM3URouteProbeTests: XCTestCase {
             clock: { defer { now += 0.013 }; return now })
         XCTAssertEqual(result.visited, 0); XCTAssertEqual(result.limits, ["time"])
         XCTAssertEqual(reflections, 0)
+    }
+
+    private struct OwnedFocusedPublished<Value> { let storage: OwnedFocusedStorage<Value> }
+    private struct OwnedFocusedStorage<Value> { let value: Value }
+    private struct OwnedFocusedRouter { let _path: OwnedFocusedPublished<[OwnedRoute]> }
+    private struct OwnedFocusedRoot { let _router: OwnedFocusedRouter }
+    private struct OwnedFocusedHost {
+        let _rootView: OwnedFocusedRoot
+        let unrelated: OwnedFocusedSecret
+        init(_rootView: OwnedFocusedRoot, unrelated: OwnedFocusedSecret = OwnedFocusedSecret()) {
+            self._rootView = _rootView; self.unrelated = unrelated
+        }
+    }
+    private final class OwnedFocusedSecret: CustomStringConvertible {
+        var descriptions = 0
+        var description: String { descriptions += 1; return "owned-private-route-payload" }
+    }
+    private final class OwnedFocusedReflectable: CustomReflectable {
+        var reflections = 0
+        var customMirror: Mirror {
+            reflections += 1
+            return Mirror(self, children: ["secret": "owned-private-route-payload"])
+        }
+    }
+    private struct OwnedFocusedScalarContainer { let value: OwnedFocusedReflectable }
+    private final class OwnedFocusedCycle { var content: OwnedFocusedCycle? }
+    private func focusedNames(_ value: Any) -> String {
+        if value is OwnedFocusedHost { return "UIKit.UIHostingController<MonPlayer.Root>" }
+        if value is OwnedFocusedRoot { return "SwiftUI.ModifiedContent<MonPlayer.Root, SwiftUI.Environment>" }
+        if value is OwnedFocusedRouter { return "MonPlayer.AppRouter" }
+        if value is OwnedFocusedPublished<[OwnedRoute]> { return "Combine.Published<Swift.Array<MonPlayer.AppRoute>>" }
+        if value is OwnedFocusedStorage<[OwnedRoute]> { return "Combine.Published<Swift.Array<MonPlayer.AppRoute>>.Storage" }
+        if value is [OwnedRoute] { return "Swift.Array<MonPlayer.AppRoute>" }
+        if value is OwnedRoute { return "MonPlayer.AppRoute" }
+        if value is OwnedFocusedCycle { return "SwiftUI.OwnedFocusedCycle" }
+        if value is OwnedFocusedSecret { return "MonPlayer.OwnedFocusedSecret" }
+        if value is OwnedFocusedScalarContainer { return "SwiftUI.OwnedFocusedScalarContainer" }
+        if value is OwnedFocusedReflectable { return "Swift.String" }
+        return String(reflecting: type(of: value))
+    }
+    func testM3UFocusedRouteWalksRootRouterPublishedPathToM3UCase() {
+        let router = OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerM3UDetail("owned-private-route-payload")])))
+        let result = CKM3UFocusedRouteReflection.snapshot(
+            [OwnedFocusedHost(_rootView: OwnedFocusedRoot(_router: router))],
+            typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertTrue(result.tags.isSuperset(of: ["focused-root", "focused-router", "focused-path",
+                                                  "focused-route", "router", "route", "case-m3u-provider"]))
+        XCTAssertTrue(result.fields.isSuperset(of: ["_rootView", "_router", "_path", "storage", "value"]))
+        XCTAssertEqual(CKM3UProbePolicy.branch(result.tags), "m3u-candidate")
+        XCTAssertFalse(result.summary.contains("owned-private")); XCTAssertFalse(result.truncated)
+    }
+    func testM3UFocusedRouteDistinguishesJSONWithoutReadingPayload() {
+        let secret = OwnedFocusedSecret()
+        let router = OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerJsonDetail("owned-private-route-payload")])))
+        let result = CKM3UFocusedRouteReflection.snapshot(
+            [OwnedFocusedHost(_rootView: OwnedFocusedRoot(_router: router), unrelated: secret)],
+            typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertTrue(result.tags.contains("case-json-provider"))
+        XCTAssertFalse(result.tags.contains("case-m3u-provider"))
+        XCTAssertEqual(CKM3UProbePolicy.branch(result.tags), "json-candidate")
+        XCTAssertEqual(secret.descriptions, 0); XCTAssertFalse(result.summary.contains("owned-private"))
+    }
+    func testM3UFocusedRouteStopsCyclesWithinSmallerNodeBudget() {
+        weak var released: OwnedFocusedCycle?
+        let result = autoreleasepool { () -> CKM3UProbeSnapshot in
+            let node = OwnedFocusedCycle(); node.content = node; released = node
+            defer { node.content = nil }
+            return CKM3UFocusedRouteReflection.snapshot([node], typeNameFor: focusedNames, clock: { 0 })
+        }
+        XCTAssertLessThanOrEqual(result.visited, 3); XCTAssertFalse(result.truncated); XCTAssertNil(released)
+    }
+    func testM3UFocusedRouteClampsNodesDepthAndTimeIndependently() {
+        let host = OwnedFocusedHost(_rootView: OwnedFocusedRoot(_router:
+            OwnedFocusedRouter(_path: OwnedFocusedPublished(storage: OwnedFocusedStorage(value: [])))))
+        let nodes = CKM3UFocusedRouteReflection.snapshot([host], nodes: 0, typeNameFor: focusedNames)
+        XCTAssertEqual(nodes.visited, 0); XCTAssertEqual(nodes.limits, ["focus-nodes"])
+        let depth = CKM3UFocusedRouteReflection.snapshot([host], depth: 0, typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertEqual(depth.visited, 1); XCTAssertEqual(depth.limits, ["focus-depth"])
+        var now: TimeInterval = 0
+        let timed = CKM3UFocusedRouteReflection.snapshot([host], seconds: 999,
+            typeNameFor: { value in now = 0.007; return self.focusedNames(value) }, clock: { now })
+        XCTAssertEqual(timed.visited, 1); XCTAssertEqual(timed.limits, ["focus-time"])
+        XCTAssertEqual(CKM3UFocusedRouteReflection.maximumNodes, 64)
+        XCTAssertLessThan(CKM3UFocusedRouteReflection.maximumNodes, 256)
+    }
+    func testM3UFocusedRouteRejectsOversizedTypeNamesWithFixedReasonOnly() {
+        let result = CKM3UFocusedRouteReflection.snapshot([OwnedFocusedRoot(_router:
+            OwnedFocusedRouter(_path: OwnedFocusedPublished(storage: OwnedFocusedStorage(value: []))))],
+            typeNameFor: { _ in String(repeating: "x", count: 5000) }, clock: { 0 })
+        XCTAssertEqual(result.limits, ["focus-types"]); XCTAssertTrue(result.tags.isEmpty)
+        XCTAssertTrue(result.fields.isEmpty); XCTAssertFalse(result.summary.contains("xxxx"))
+    }
+    func testM3UFocusedRouteStopsBeforeReflectingScalarPayload() {
+        let payload = OwnedFocusedReflectable()
+        let result = CKM3UFocusedRouteReflection.snapshot(
+            [OwnedFocusedScalarContainer(value: payload)], typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertEqual(payload.reflections, 0); XCTAssertEqual(result.visited, 2)
+        XCTAssertEqual(result.fields, ["value"]); XCTAssertFalse(result.summary.contains("owned-private"))
+    }
+    func testM3UProbeSnapshotMergesFocusedTokensWithinExistingEvidenceBound() {
+        var generic = CKM3UProbeSnapshot(tags: ["player-model"], fields: ["content"], limits: [],
+                                         visited: 250, truncated: false)
+        let focused = CKM3UProbeSnapshot(tags: ["focused-router", "case-m3u-group"], fields: ["_path"],
+                                         limits: ["focus-time"], visited: 20, truncated: true)
+        generic.merge(focused)
+        XCTAssertEqual(generic.visited, 256); XCTAssertTrue(generic.truncated)
+        XCTAssertTrue(generic.tags.isSuperset(of: ["player-model", "focused-router", "case-m3u-group"]))
+        XCTAssertEqual(generic.limits, ["focus-time"])
     }
     @MainActor
     func testM3UProbeDisabledModeCannotChangeVisibleController() {

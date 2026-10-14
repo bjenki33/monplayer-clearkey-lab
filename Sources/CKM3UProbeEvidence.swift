@@ -18,7 +18,7 @@ struct CKM3UProbeEvidenceRecord: Codable {
         self.event = event
         self.ticks = max(0, min(ticks, 300))
         foregroundSeconds = seconds.isFinite ? max(0, min(seconds, 240)) : 0
-        let allowedTags = Set(CKM3UProbePolicy.names.values).union(CKM3UProbePolicy.cases.values)
+        let allowedTags = CKM3UProbePolicy.allowedTags
         let tags = (snapshot?.tags ?? []).intersection(allowedTags)
         self.tags = tags.sorted()
         fields = (snapshot?.fields ?? []).intersection(CKM3UProbePolicy.fields).sorted()
