@@ -103,6 +103,25 @@ final class CKNativeRemux {
                 throw CKNativeFailure.unsupportedCodec
             }
         }
+        let audioParameters = audio >= 0 ? streams[Int(audio)]?.pointee.codecpar : nil
+        let declared = selection?.bandwidth ?? videoParameters.pointee.bit_rate
+        let total = declared + max(0, audioParameters?.pointee.bit_rate ?? 0)
+        var codecs: String?
+        if videoParameters.pointee.codec_id == AV_CODEC_ID_H264,
+           videoParameters.pointee.extradata_size >= 4, let bytes = videoParameters.pointee.extradata, bytes[0] == 1 {
+            codecs = String(format: "avc1.%02x%02x%02x", bytes[1], bytes[2], bytes[3])
+            if let audioParameters {
+                if audioParameters.pointee.codec_id == AV_CODEC_ID_AAC,
+                   audioParameters.pointee.extradata_size >= 2, let bytes = audioParameters.pointee.extradata {
+                    let object = bytes[0] >> 3
+                    if object > 0, object < 31 { codecs! += ",mp4a.40.\(object)" } else { codecs = nil }
+                } else if audioParameters.pointee.codec_id == AV_CODEC_ID_AC3 { codecs! += ",ac-3" }
+                else if audioParameters.pointee.codec_id == AV_CODEC_ID_EAC3 { codecs! += ",ec-3" }
+                else if audioParameters.pointee.codec_id == AV_CODEC_ID_MP3 { codecs! += ",mp4a.6B" }
+                else { codecs = nil }
+            }
+        }
+        store.describe(bandwidth: total > 0 ? total : 4_000_000, codecs: codecs)
         var output: UnsafeMutablePointer<AVFormatContext>?
         try check(avformat_alloc_output_context2(&output, nil, "mp4", nil))
         guard let out = output else { throw CKNativeFailure.transport }

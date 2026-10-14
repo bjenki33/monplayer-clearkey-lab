@@ -13,6 +13,8 @@ final class CKNativeStore {
     private var terminal = false, failed = false, cancelled = false
     private var targetDuration: Int?
     private var manifestRequests = 0, initRequests = 0, mediaRequests = 0
+    private var bandwidth: Int64 = 4_000_000
+    private var codecs: String?
     private(set) var videoPackets = 0, audioPackets = 0
     static let segmentLimit = 16 * 1024 * 1024
     static let memoryLimit = 64 * 1024 * 1024
@@ -30,6 +32,14 @@ final class CKNativeStore {
         if !terminal && nextNumber - requestedThrough >= 7 { condition.wait(until: Date(timeIntervalSinceNow: 0.2)) }
     }
     var ahead: Int { condition.lock(); defer { condition.unlock() }; return nextNumber - requestedThrough }
+    func describe(bandwidth: Int64, codecs: String?) {
+        condition.lock(); defer { condition.unlock() }
+        if bandwidth > 0, bandwidth <= 1_000_000_000 { self.bandwidth = bandwidth }
+        if let codecs, codecs.utf8.count <= 128,
+           codecs.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [44, 45, 46].contains($0) }) {
+            self.codecs = codecs
+        }
+    }
     func initialize(_ data: Data, generation: Int) throws -> String {
         guard !data.isEmpty, data.count <= 1024 * 1024 else { throw CKNativeFailure.tooLarge }
         condition.lock(); defer { condition.unlock() }
@@ -71,6 +81,15 @@ final class CKNativeStore {
         let name = String(path.dropFirst(token.count + 2))
         condition.lock(); defer { condition.unlock() }
         if name == "index.m3u8" {
+            manifestRequests += 1
+            guard !failed, !cancelled else { return (410, "text/plain", Data()) }
+            // Classify as HLS immediately;media preparation may legitimately wait.
+            // The single variant's startup bandwidth is an estimate,not an ABR ladder.
+            let detail = codecs.map { ",CODECS=\"\($0)\"" } ?? ""
+            let text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth)\(detail)\nmedia.m3u8\n"
+            return (200, "application/vnd.apple.mpegurl", Data(text.utf8))
+        }
+        if name == "media.m3u8" {
             manifestRequests += 1
             let deadline = Date(timeIntervalSinceNow: wait)
             while segments.count < Self.startupSegments && !terminal { if !condition.wait(until: deadline) { break } }

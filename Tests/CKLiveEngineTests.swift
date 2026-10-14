@@ -547,7 +547,7 @@ final class CKLiveEngineTests: XCTestCase {
             print("OWNED ORIGINAL ERROR: \(event.errorDomain)/\(event.errorStatusCode) \(event.errorComment ?? "")")
         }
         let store = session.store
-        let playlist = store.response(path: "/\(store.token)/index.m3u8", wait: 0)
+        let playlist = store.response(path: "/\(store.token)/media.m3u8", wait: 0)
         print("OWNED ORIGINAL PLAYLIST: \(playlist.0) \(String(decoding: playlist.2, as: UTF8.self))")
         var data = store.response(path: "/\(store.token)/init0.mp4", wait: 0).2
         for index in 0..<3 { data.append(store.response(path: "/\(store.token)/segment\(index).m4s", wait: 0).2) }
