@@ -125,19 +125,40 @@ final class CKLiveEngineTests: XCTestCase {
 
     @MainActor
     func testCloseDuringFragmentRecoveryCannotAttachOrKeepRequesting() async throws {
-        let session = "segmentinitcancelalways"
+        try await cancelHeldFragment("segmentinitcancelalways", attempt: 1)
+    }
+
+    @MainActor
+    func testCloseDuringHeldFragmentRetryNeverStartsThirdRequest() async throws {
+        try await cancelHeldFragment("segmentinitretrycancelalways", attempt: 2)
+    }
+
+    @MainActor
+    private func cancelHeldFragment(_ session: String, attempt: Double) async throws {
         let controller = CKPlaybackController(channel: try ownedChannel(session: session))
         controller.loadViewIfNeeded()
-        for _ in 0..<200 {
-            if try await CKFragmentFixtures.stats(session)["fault_attempts"] == 1 { break }
+        defer { if !controller.finished { controller.close() } }
+        var initial: [String: Double] = [:]
+        let began = ProcessInfo.processInfo.systemUptime
+        while ProcessInfo.processInfo.systemUptime - began < 4 {
+            initial = try await CKFragmentFixtures.stats(session)
+            if (initial["fault_attempts"] ?? 0) >= attempt { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        let initial = try await CKFragmentFixtures.stats(session)
-        XCTAssertEqual(initial["fault_attempts"], 1)
+        // Close immediately on the observed held request,without another
+        // async stats fetch racing the250ms retry backoff.
         controller.close(); let status = controller.status.text
+        let gateAge = Date().timeIntervalSince1970 - (try XCTUnwrap(initial["fault_gate_wall"]))
+        XCTAssertEqual(initial["fault_attempts"], attempt)
+        XCTAssertGreaterThanOrEqual(gateAge, 0)
+        XCTAssertLessThan(gateAge, 4, "close must happen while the existing5s retry budget is live")
+        var release = URLRequest(url: URL(string: "http://127.0.0.1:18761/fault/\(session)/release")!)
+        release.httpMethod = "POST"
+        _ = try await CKHTTP.read(release, role: .license, limit: 1024)
         try await Task.sleep(nanoseconds: 1_500_000_000)
         let final = try await CKFragmentFixtures.stats(session)
-        XCTAssertEqual(final["fault_attempts"], 1)
+        print("OWNED HELD FRAGMENT CANCEL [\(session)]: close age \(gateAge)s; requests \(final["fault_attempts"] ?? 0)")
+        XCTAssertEqual(final["fault_attempts"], attempt)
         XCTAssertNil(controller.layer); XCTAssertNil(controller.playerOptions)
         XCTAssertEqual(controller.status.text, status)
     }

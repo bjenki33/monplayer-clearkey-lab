@@ -241,6 +241,13 @@ class Handler(BaseHTTPRequestHandler):
                 stats['fault_failures'] = stats.get('fault_failures', 0) + 1
             else:
                 stats['fault_successes'] = stats.get('fault_successes', 0) + 1
+            held_attempt = 1 if session == 'segmentinitcancelalways' else 2 if session == 'segmentinitretrycancelalways' else 0
+            gate = None
+            if attempt == held_attempt:
+                gate = fault.setdefault('release', threading.Event())
+                stats['fault_gate_wall'] = time.time()
+        if gate is not None:
+            gate.wait(10)
         if not failed:
             return False
         if session.endswith(('deny', 'server')):
@@ -433,6 +440,14 @@ class Handler(BaseHTTPRequestHandler):
                 if state is not None:
                     state['fault'] = {'armed': True, 'target': None, 'attempts': 0}
             self.send_response(204 if state is not None else 404)
+            self.send_header('Content-Length', '0'); self.end_headers()
+        elif path.startswith('/fault/') and path.endswith('/release'):
+            session = path.split('/')[2]
+            with SESSION_LOCK:
+                gate = SESSIONS.get(session, {}).get('fault', {}).get('release')
+                if gate is not None:
+                    gate.set()
+            self.send_response(204 if gate is not None else 404)
             self.send_header('Content-Length', '0'); self.end_headers()
         elif path.startswith('/renew/'):
             self.renewal(path.split('/')[-1])
