@@ -21,17 +21,38 @@ final class CKOriginalPlayerTests: XCTestCase {
     }
 
     @MainActor
-    private func controlNativeRing(finite: Bool) async throws {
+    func testDelayedPreMuxedLiveNativeRingActuallyPlays() async throws {
+        try await controlNativeRing(finite: false, delayed: true)
+    }
+
+    @MainActor
+    func testResolvedRemuxWithoutAssetMappingActuallyPlays() async throws {
+        _ = try await CKNativeFixtures.load("nativedirecttransport")
+        let channel = try XCTUnwrap(CKRegistry.shared.channel(CKNativeFixtures.media("nativedirecttransport")))
+        let playback = try CKNativePlayback(channel: channel)
+        defer { playback.stop() }
+        playback.playing(true); playback.start()
+        try await controlNativeHLS(playback.http.url, label: "directRemux")
+        print("OWNED DIRECT REMUX REQUESTS: \(playback.stats)")
+    }
+
+    @MainActor
+    private func controlNativeRing(finite: Bool, delayed: Bool = false) async throws {
         let store = CKNativeStore(), bundle = Bundle(for: CKOriginalPlayerTests.self)
         let directory = try XCTUnwrap(bundle.url(forResource: "plainhls", withExtension: nil, subdirectory: "Fixtures"))
         let initName = try store.initialize(Data(contentsOf: directory.appendingPathComponent("init.mp4")), generation: 0)
-        for index in 0..<6 {
-            try store.append(Data(contentsOf: directory.appendingPathComponent("segment\(index).m4s")), seconds: 2,
-                             initName: initName, discontinuity: false)
+        let seed = Task.detached {
+            if delayed { try await Task.sleep(nanoseconds: 5_000_000_000) }
+            for index in 0..<6 {
+                try store.append(Data(contentsOf: directory.appendingPathComponent("segment\(index).m4s")), seconds: 2,
+                                 initName: initName, discontinuity: false)
+            }
+            if finite { store.finish() }
         }
-        if finite { store.finish() }
+        if !delayed { try await seed.value }
         let server = try CKNativeHTTP(store: store); defer { server.stop() }
-        try await controlNativeHLS(server.url, label: finite ? "finiteRing" : "liveRing")
+        try await controlNativeHLS(server.url, label: delayed ? "delayedRing" : finite ? "finiteRing" : "liveRing")
+        try await seed.value
         print("OWNED HLS CONTROL REQUESTS: \(store.stats)")
     }
 
