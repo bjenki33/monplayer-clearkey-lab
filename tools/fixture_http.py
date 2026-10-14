@@ -22,13 +22,14 @@ LICENSE = {'keys': [{'kty': 'oct', 'kid': KIDS[0], 'k': 'EBESExQVFhcYGRobHB0eHw'
 ROTATED_KID = 'QEFCQ0RFRkdISUpLTE1OTw'
 ROTATED_KEY = {'kty': 'oct', 'kid': ROTATED_KID, 'k': 'UFFSU1RVVldYWVpbXF1eXw'}
 
-ROOT = Path(sys.argv[1]).resolve()
+ROOT = Path(__file__).resolve().parent.parent / 'Tests' / 'Fixtures'
 NS = 'urn:mpeg:dash:schema:mpd:2011'
 ET.register_namespace('', NS)
 ET.register_namespace('cenc', 'urn:mpeg:cenc:2013')
 SESSIONS = {}
 SESSION_LOCK = threading.Lock()
 TRANSPORT = {}
+RESOLUTIONS = {}
 SEQUENCE_BASE = 895000000
 
 
@@ -124,6 +125,65 @@ def live_segment(session, media):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def resolution(self, path, post=False):
+        parts = path.split('/')
+        if len(parts) != 5 or not parts[2].isalnum() or len(parts[2]) > 64:
+            self.send_error(400); return
+        session, mode, resource = parts[2:]
+        if mode not in {'get', 'post', 'permanent', 'single', 'inline', 'deny',
+                        'invalid', 'cancel', 'deadline', 'matching'} or resource not in {'keys', 'manifest.mpd', 'stats'}:
+            self.send_error(400); return
+        with SESSION_LOCK:
+            state = RESOLUTIONS.setdefault(session, {'keys': 0, 'manifests': 0,
+                                                     'wrong_headers': 0, 'wrong_challenges': 0, 'cookies': 0})
+            if resource == 'stats':
+                body = json.dumps(state).encode()
+            else:
+                role = 'keys' if resource == 'keys' else 'manifests'
+                state[role] += 1
+                attempt = state[role]
+                expected = self.headers.get('X-License' if role == 'keys' else 'X-Stream')
+                leaked = self.headers.get('X-Stream' if role == 'keys' else 'X-License')
+                state['wrong_headers'] += int(expected != ('owned-license' if role == 'keys' else 'owned-stream') or leaked is not None)
+                state['cookies'] += int(self.headers.get('Cookie') is not None)
+                body = b''
+        if resource == 'keys':
+            if mode == 'deny':
+                self.send_error(403); return
+            if mode == 'deadline':
+                time.sleep(2)
+            if post:
+                raw = self.rfile.read(min(128 * 1024 + 1, int(self.headers.get('Content-Length', '0'))))
+                expected_ids = [KIDS[0] if attempt == 1 else ROTATED_KID, KIDS[1]]
+                try:
+                    challenge = json.loads(raw)
+                    valid = challenge.get('type') == 'temporary' and set(challenge.get('kids', [])) == set(expected_ids)
+                except Exception:
+                    valid = False
+                if not valid:
+                    with SESSION_LOCK:
+                        state['wrong_challenges'] += 1
+                    self.send_error(400); return
+            rotated = mode == 'post' or (mode == 'get' and attempt > 1)
+            values = [ROTATED_KEY if rotated else LICENSE['keys'][0], LICENSE['keys'][1]]
+            if mode == 'single':
+                values = values[:1]
+            body = b'not a license' if mode == 'invalid' else json.dumps({'keys': values, 'type': 'temporary'}).encode()
+        elif resource == 'manifest.mpd':
+            first = KIDS[0] if mode == 'matching' or (mode == 'post' and attempt == 1) else ROTATED_KID
+            ids = [base64.urlsafe_b64decode(kid + '==').hex() for kid in [first, KIDS[1]]]
+            protections = ''.join(f'<ContentProtection c:default_KID="{kid}"/>' for kid in ids)
+            body = (f'<MPD xmlns="{NS}" xmlns:c="urn:mpeg:cenc:2013"><Period>{protections}</Period></MPD>').encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/dash+xml' if resource == 'manifest.mpd' else 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Set-Cookie', 'owned-resolution=never-retain; Path=/')
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def body_fault(self, session, media, body):
         if not session.startswith('body') or not re.fullmatch(r'video/chunk-stream0-\d+\.m4s', media):
             return False
@@ -431,7 +491,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path.startswith('/transport/'):
+        if path.startswith('/resolve/'):
+            self.resolution(path, post=True)
+        elif path.startswith('/transport/'):
             self.transport(*path.split('/')[2:4], post=True)
         elif path.startswith('/fault/') and path.endswith('/arm'):
             session = path.split('/')[2]
@@ -466,6 +528,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path.startswith('/resolve/'):
+            self.resolution(path); return
         if path.startswith('/native/'):
             parts = path.split('/')
             if len(parts) != 4 or not parts[2].isalnum() or len(parts[2]) > 64:
@@ -570,4 +634,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-ThreadingHTTPServer(('127.0.0.1', 18761), Handler).serve_forever()
+if __name__ == '__main__':
+    ROOT = Path(sys.argv[1]).resolve()
+    ThreadingHTTPServer(('127.0.0.1', 18761), Handler).serve_forever()

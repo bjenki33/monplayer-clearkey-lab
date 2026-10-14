@@ -57,6 +57,7 @@ enum CKHTTPRetry {
         }
         var delay: TimeInterval = failedAttempt == 1 ? 0.25 : 0.75
         if let value = response?.value(forHTTPHeaderField: "Retry-After") {
+            // Never shorten a server's requested wait or guess a malformed value.
             guard let requested = retryAfter(value, now: now), requested <= 2 else { return nil }
             delay = max(delay, requested)
         }
@@ -144,6 +145,8 @@ enum CKHTTP {
         }, onCancel: { session.invalidateAndCancel() }) }
         catch {
             if Task.isCancelled { throw CancellationError() }
+            // URLSession may fail its async continuation before yielding the
+            // rejected redirect response; preserve the policy's safe taxonomy.
             if policy.wasDenied { throw CKFailure.unsafeRedirect }
             throw error
         }
@@ -209,31 +212,43 @@ struct CKResolvedSource {
 struct CKResolutionError: Error { let stage: CKStage; let underlying: Error }
 
 enum CKSourceResolver {
-    static func manifest(_ channel: CKChannel) async throws -> (Data, HTTPURLResponse) {
-        var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+    static func manifest(_ channel: CKChannel, timeout: TimeInterval = 20) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: channel.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         channel.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let result = try await CKHTTP.read(request, role: .manifest, limit: 2 * 1024 * 1024)
         _ = try CKManifest.validatedURL(result.0, response: result.1)
         return result
     }
 
-    static func keys(_ channel: CKChannel, ids: [String]) async throws -> CKKeySet {
-        if let request = try channel.keyRequest(kids: ids) {
+    static func keys(_ channel: CKChannel, ids: [String], timeout: TimeInterval = 25) async throws -> CKKeySet {
+        if var request = try channel.keyRequest(kids: ids) {
+            request.timeoutInterval = timeout
             let result = try await CKHTTP.read(request, role: .license, limit: 1024 * 1024)
             return try channel.license.keys(from: result.0, requested: ids)
         }
         return try CKKeySet(CKKeys.parse(Data(channel.license.source.utf8)))
     }
 
-    static func resolve(_ channel: CKChannel) async throws -> CKResolvedSource {
+    static func resolve(_ channel: CKChannel, timeout: TimeInterval = 45) async throws -> CKResolvedSource {
+        let budget = timeout.isFinite ? max(0, min(timeout, 45)) : 45
+        let deadline = ProcessInfo.processInfo.systemUptime + budget
         var lastFailure: CKResolutionError?
         for attempt in 0..<3 {
+            try Task.checkCancellation()
             do {
-                return try await resolveOnce(channel)
+                return try await resolveOnce(channel, deadline: deadline)
             } catch let failure as CKResolutionError {
-                guard isKidDesync(failure.underlying) else { throw failure }
+                try Task.checkCancellation()
+                guard isKidDesync(failure.underlying),
+                      let licenseURL = URL(string: channel.license.source), licenseURL.host != nil,
+                      ["http", "https"].contains(licenseURL.scheme?.lowercased() ?? "") else { throw failure }
                 lastFailure = failure
-                if attempt < 2 { try await Task.sleep(nanoseconds: 500_000_000) }
+                if attempt < 2 {
+                    guard deadline - ProcessInfo.processInfo.systemUptime > 0.5 else {
+                        throw CKResolutionError(stage: failure.stage, underlying: URLError(.timedOut))
+                    }
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
             } catch {
                 throw error
             }
@@ -246,7 +261,14 @@ enum CKSourceResolver {
         return false
     }
 
-    private static func resolveOnce(_ channel: CKChannel) async throws -> CKResolvedSource {
+    private static func requestTimeout(_ deadline: TimeInterval, maximum: TimeInterval) throws -> TimeInterval {
+        try Task.checkCancellation()
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { throw URLError(.timedOut) }
+        return min(remaining, maximum)
+    }
+
+    private static func resolveOnce(_ channel: CKChannel, deadline: TimeInterval) async throws -> CKResolvedSource {
         var stage = CKStage.key
         do {
             if let failure = channel.metadataFailure { throw failure }
@@ -254,7 +276,7 @@ enum CKSourceResolver {
             var manifest: (Data,HTTPURLResponse)?, manifestSeconds = TimeInterval(0), ids: [String] = []
             func fetchManifest() async throws -> (Data,HTTPURLResponse,TimeInterval) {
                 let began = ProcessInfo.processInfo.systemUptime
-                let result = try await Self.manifest(channel)
+                let result = try await Self.manifest(channel, timeout: requestTimeout(deadline, maximum: 20))
                 return (result.0,result.1,ProcessInfo.processInfo.systemUptime - began)
             }
             if spec.body?.needsKeyIDs == true {
@@ -265,7 +287,7 @@ enum CKSourceResolver {
             }
             stage = .key
             let began = ProcessInfo.processInfo.systemUptime
-            let keys = try await Self.keys(channel, ids: ids)
+            let keys = try await Self.keys(channel, ids: ids, timeout: requestTimeout(deadline, maximum: 25))
             let keySeconds = ProcessInfo.processInfo.systemUptime - began
             if manifest == nil {
                 stage = .manifest
@@ -274,12 +296,14 @@ enum CKSourceResolver {
             }
             stage = .manifest
             guard let manifest else { throw CKFailure.network }
-            if let freshIDs = try? CKManifestKeyIDs.read(manifest.0),
+            // Single-key playback intentionally tolerates stale declared MPD KIDs.
+            if keys.requiresKeyMap, let freshIDs = try? CKManifestKeyIDs.read(manifest.0),
                !freshIDs.isEmpty, !keys.contains(freshIDs) {
                 throw CKFailure.missingLicenseKey
             }
             let url = try CKManifest.validatedURL(manifest.0, response: manifest.1, keySet: keys)
             try Task.checkCancellation()
+            _ = try requestTimeout(deadline, maximum: 45)
             return CKResolvedSource(keys: keys, data: manifest.0, url: url, keySeconds: keySeconds, manifestSeconds: manifestSeconds)
         } catch { throw CKResolutionError(stage: stage, underlying: error) }
     }
