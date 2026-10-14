@@ -31,27 +31,36 @@ final class CKLiveEngineTests: XCTestCase {
         let url = CKNativeFixtures.media(name)
         XCTAssertNotNil(CKRegistry.shared.channel(url))
         XCTAssertNil(CKRuntime.presentedController)
+        XCTAssertTrue(CKPresentation.originalPlayer)
+        let root = CKRuntime.top()
         let native = AVPlayer(url: url)
-        defer { CKRuntime.presentedController?.close(); native.pause(); native.replaceCurrentItem(with: nil) }
-        try await waitFor { CKRuntime.presentedController?.metrics.playableSeconds != nil }
-        let controller = try XCTUnwrap(CKRuntime.presentedController)
-        let player = try XCTUnwrap(controller.layer?.player as? KSMEPlayer)
+        let item = try XCTUnwrap(native.currentItem)
+        let media = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        item.add(media)
+        let rendering = AVPlayerLayer(player: native)
+        rendering.frame = root?.view.bounds ?? CGRect(x: 0, y: 0, width: 640, height: 360)
+        root?.view.layer.addSublayer(rendering)
+        defer { native.pause(); native.replaceCurrentItem(with: nil); rendering.removeFromSuperlayer() }
+        native.play()
+        try await waitFor { item.status == .readyToPlay && native.timeControlStatus == .playing }
         XCTAssertNotEqual((native.currentItem?.asset as? AVURLAsset)?.url, url,
-                          "original AVPlayer must use the valid placeholder while supported ClearKey is routed")
-        let clock = player.currentPlaybackTime
+                          "genuine AVPlayer receives the actual on-device media endpoint")
+        XCTAssertEqual((item.asset as? AVURLAsset)?.url.host, "127.0.0.1")
+        XCTAssertTrue(CKRuntime.top() === root); XCTAssertNil(CKRuntime.presentedController)
+        let audioTracks = try await item.asset.loadTracks(withMediaType: .audio)
+        XCTAssertFalse(audioTracks.isEmpty)
+        let clock = native.currentTime().seconds
         var frames: Set<UInt64> = []
         for _ in 0..<40 {
-            if let buffer = player.videoOutput?.pixelBuffer?.cvPixelBuffer { frames.insert(fingerprint(buffer)) }
+            if let buffer = media.copyPixelBuffer(forItemTime: native.currentTime(), itemTimeForDisplay: nil) { frames.insert(fingerprint(buffer)) }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         let label = asynchronous ? "OWNED ASYNC IMPORT RESULT" :
             delegated ? "OWNED DELEGATED IMPORT RESULT" : "OWNED NATIVE IMPORT RESULT"
-        print("\(label): advance \(player.currentPlaybackTime-clock)s; distinct frames \(frames.count)")
-        XCTAssertGreaterThan(player.currentPlaybackTime-clock, 7); XCTAssertGreaterThan(frames.count, 30)
-        XCTAssertGreaterThan(player.dynamicInfo?.displayFPS ?? 0, 0)
-        XCTAssertEqual(controller.layer?.state, .bufferFinished)
-        controller.close()
-        try await waitFor { CKRuntime.presentedController == nil }
+        print("\(label): advance \(native.currentTime().seconds-clock)s; distinct frames \(frames.count); genuine AVPlayer,no prototype UI")
+        XCTAssertGreaterThan(native.currentTime().seconds-clock, 7); XCTAssertGreaterThan(frames.count, 30)
+        XCTAssertGreaterThan(CKNativeItems.session(item)?.stats["audio_packets"] ?? 0, 0)
+        XCTAssertTrue(rendering.player === native); XCTAssertNil(CKRuntime.presentedController)
     }
 
     @MainActor
@@ -253,6 +262,45 @@ final class CKLiveEngineTests: XCTestCase {
     @MainActor
     func testActualNewLicenseKeyRebuildsAndKeepsMoving() async throws {
         try await exerciseRotation(session: "rotationlicensedengine", preloaded: false)
+    }
+
+    @MainActor
+    func testOriginalAVPlayerPreloadedKeyChangeKeepsItemAndMovingFrames() async throws {
+        try await exerciseOriginalRotation(session: "rotationnativepreloaded", preloaded: true)
+    }
+
+    @MainActor
+    func testOriginalAVPlayerLicensedKeyChangeKeepsItemAndMovingFrames() async throws {
+        try await exerciseOriginalRotation(session: "rotationnativelicensed", preloaded: false)
+    }
+
+    @MainActor
+    private func exerciseOriginalRotation(session: String, preloaded: Bool) async throws {
+        let context = try CKNativeItems.prepare(CKRotationFixtures.channel(session, preloaded: preloaded))
+        let asset = AVURLAsset(url: context.url); context.attach(asset)
+        let item = AVPlayerItem(asset: asset), native = AVPlayer(playerItem: item)
+        let media = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        item.add(media)
+        defer { native.pause(); native.replaceCurrentItem(with: nil); context.session.stop() }
+        native.play()
+        try await waitFor { item.status == .readyToPlay && native.timeControlStatus == .playing }
+        try await CKRotationFixtures.advance(session)
+        try await waitFor { context.session.stats["key_changes"] == 1 }
+        let clock = native.currentTime().seconds
+        var frames: Set<UInt64> = []
+        for _ in 0..<60 {
+            if let buffer = media.copyPixelBuffer(forItemTime: native.currentTime(), itemTimeForDisplay: nil) { frames.insert(fingerprint(buffer)) }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let stats = try await CKRotationFixtures.stats(session)
+        print("OWNED ORIGINAL ROTATION RESULT [\(session)]: advance \(native.currentTime().seconds-clock)s; distinct frames \(frames.count); changes \(context.session.stats["key_changes"] ?? -1); acquisitions \(context.session.stats["new_acquisitions"] ?? -1)")
+        XCTAssertTrue(native.currentItem === item); XCTAssertTrue(item.asset === asset)
+        XCTAssertGreaterThan(native.currentTime().seconds-clock, 10); XCTAssertGreaterThan(frames.count, 40)
+        XCTAssertGreaterThan(stats["rotated_requests"] ?? 0, 0)
+        XCTAssertEqual(context.session.stats["key_changes"], 1)
+        XCTAssertEqual(context.session.stats["new_acquisitions"], preloaded ? 0 : 1)
+        XCTAssertEqual(stats["new_key_requests"] ?? 0, preloaded ? 0 : 1)
+        XCTAssertNil(CKRuntime.presentedController)
     }
 
     @MainActor
@@ -476,7 +524,7 @@ final class CKLiveEngineTests: XCTestCase {
         var hash: UInt64 = 1469598103934665603
         for y in Swift.stride(from: 0, to: height, by: max(1, height / 12)) {
             for x in Swift.stride(from: 0, to: width, by: max(1, width / 16)) {
-                hash = (hash ^ UInt64(bytes[y * stride + x])) &* 1099511628211
+                hash = (hash ^ UInt64(bytes[y * stride + x * (planar ? 1 : 4)])) &* 1099511628211
             }
         }
         return hash

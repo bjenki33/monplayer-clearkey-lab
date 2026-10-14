@@ -44,6 +44,23 @@ static AVPlayerItem *CKPlaceholder(void) {
     if ([runtime respondsToSelector:@selector(placeholderItem)]) return ((id (*)(id,SEL))objc_msgSend)(runtime,@selector(placeholderItem));
     return nil;
 }
+static id CKNativeContext(NSURL *url) {
+    Class runtime = CKRuntimeClass();
+    if (url && [runtime respondsToSelector:@selector(nativeContextForURL:)])
+        return ((id (*)(id, SEL, id))objc_msgSend)(runtime, @selector(nativeContextForURL:), url);
+    return nil;
+}
+static NSURL *CKContextURL(id context) {
+    return context ? ((id (*)(id, SEL))objc_msgSend)(context, @selector(url)) : nil;
+}
+static void CKAttachContext(id context, AVAsset *asset) {
+    if (context && asset) ((void (*)(id, SEL, id))objc_msgSend)(context, @selector(attach:), asset);
+}
+static void CKNativePlaying(AVPlayer *player, float rate) {
+    Class runtime = CKRuntimeClass();
+    if ([runtime respondsToSelector:@selector(nativePlaying:rate:)])
+        ((void (*)(id, SEL, id, float))objc_msgSend)(runtime, @selector(nativePlaying:rate:), player, rate);
+}
 static NSURLSessionDataTask *CKTask(id self, SEL cmd, NSURLRequest *request,
                                    void (^completion)(NSData *, NSURLResponse *, NSError *)) {
     // Observe the existing completion; never proxy, alter, retry or redirect requests.
@@ -207,13 +224,31 @@ static NSURLSession *CKSessionFactory(id self, SEL cmd, NSURLSessionConfiguratio
 - (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item __attribute__((objc_method_family(init)));
 - (instancetype)ck_initWithURL:(NSURL *)url __attribute__((objc_method_family(init)));
 - (void)ck_replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item;
+- (void)ck_play;
+- (void)ck_pause;
+- (void)ck_setRate:(float)rate;
+- (void)ck_playImmediatelyAtRate:(float)rate;
++ (instancetype)ck_nativePlayerWithURL:(NSURL *)url;
 @end
 @implementation AVPlayer (CKHooks)
++ (instancetype)ck_nativePlayerWithURL:(NSURL *)url {
+    id context = CKNativeContext(url);
+    if (!context) return [self ck_nativePlayerWithURL:url];
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:CKContextURL(context)];
+    CKAttachContext(context, item.asset);
+    return [self playerWithPlayerItem:item];
+}
 - (instancetype)ck_initWithPlayerItem:(AVPlayerItem *)item {
     if (CKRoute(item)) item = CKPlaceholder();
     return [self ck_initWithPlayerItem:item];
 }
 - (instancetype)ck_initWithURL:(NSURL *)url {
+    id native = CKNativeContext(url);
+    if (native) {
+        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:CKContextURL(native)];
+        CKAttachContext(native, item.asset);
+        return [self initWithPlayerItem:item];
+    }
     Class runtime = CKRuntimeClass();
     BOOL routed = [runtime respondsToSelector:@selector(routeURL:)] &&
         ((BOOL (*)(id, SEL, id))objc_msgSend)(runtime, @selector(routeURL:), url);
@@ -223,6 +258,69 @@ static NSURLSession *CKSessionFactory(id self, SEL cmd, NSURLSessionConfiguratio
 - (void)ck_replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
     if (CKRoute(item)) item = CKPlaceholder();
     [self ck_replaceCurrentItemWithPlayerItem:item];
+}
+- (void)ck_play { [self ck_play]; CKNativePlaying(self, 1); }
+- (void)ck_pause { [self ck_pause]; CKNativePlaying(self, 0); }
+- (void)ck_setRate:(float)rate { [self ck_setRate:rate]; CKNativePlaying(self, rate); }
+- (void)ck_playImmediatelyAtRate:(float)rate { [self ck_playImmediatelyAtRate:rate]; CKNativePlaying(self, rate); }
+@end
+@interface AVURLAsset (CKNativeHooks)
+- (instancetype)ck_nativeInitWithURL:(NSURL *)url options:(NSDictionary *)options __attribute__((objc_method_family(init)));
++ (instancetype)ck_nativeURLAssetWithURL:(NSURL *)url options:(NSDictionary *)options;
+@end
+@implementation AVURLAsset (CKNativeHooks)
++ (instancetype)ck_nativeURLAssetWithURL:(NSURL *)url options:(NSDictionary *)options {
+    id context = CKNativeContext(url);
+    NSMutableDictionary *local = context ? [options mutableCopy] : nil;
+    if (context) [local removeObjectForKey:@"AVURLAssetHTTPHeaderFieldsKey"];
+    AVURLAsset *asset = [self ck_nativeURLAssetWithURL:CKContextURL(context) ?: url options:context ? local : options];
+    CKAttachContext(context, asset); return asset;
+}
+- (instancetype)ck_nativeInitWithURL:(NSURL *)url options:(NSDictionary *)options {
+    id context = CKNativeContext(url);
+    NSMutableDictionary *local = context ? [options mutableCopy] : nil;
+    if (context) [local removeObjectForKey:@"AVURLAssetHTTPHeaderFieldsKey"];
+    AVURLAsset *asset = [self ck_nativeInitWithURL:CKContextURL(context) ?: url options:context ? local : options];
+    CKAttachContext(context, asset); return asset;
+}
+@end
+@interface AVPlayerItem (CKNativeHooks)
+- (instancetype)ck_nativeInitWithURL:(NSURL *)url __attribute__((objc_method_family(init)));
+- (instancetype)ck_nativeInitWithAsset:(AVAsset *)asset __attribute__((objc_method_family(init)));
+- (instancetype)ck_nativeInitWithAsset:(AVAsset *)asset automaticallyLoadedAssetKeys:(NSArray *)keys __attribute__((objc_method_family(init)));
++ (instancetype)ck_nativePlayerItemWithURL:(NSURL *)url;
++ (instancetype)ck_nativePlayerItemWithAsset:(AVAsset *)asset;
++ (instancetype)ck_nativePlayerItemWithAsset:(AVAsset *)asset automaticallyLoadedAssetKeys:(NSArray *)keys;
+@end
+static AVAsset *CKNativeAsset(AVAsset *asset) {
+    if (![asset isKindOfClass:AVURLAsset.class]) return asset;
+    id context = CKNativeContext(((AVURLAsset *)asset).URL);
+    if (!context) return asset;
+    AVURLAsset *mapped = [AVURLAsset URLAssetWithURL:CKContextURL(context) options:nil];
+    CKAttachContext(context, mapped); return mapped;
+}
+@implementation AVPlayerItem (CKNativeHooks)
++ (instancetype)ck_nativePlayerItemWithURL:(NSURL *)url {
+    id context = CKNativeContext(url);
+    AVPlayerItem *item = [self ck_nativePlayerItemWithURL:CKContextURL(context) ?: url];
+    CKAttachContext(context, item.asset); return item;
+}
++ (instancetype)ck_nativePlayerItemWithAsset:(AVAsset *)asset {
+    return [self ck_nativePlayerItemWithAsset:CKNativeAsset(asset)];
+}
++ (instancetype)ck_nativePlayerItemWithAsset:(AVAsset *)asset automaticallyLoadedAssetKeys:(NSArray *)keys {
+    return [self ck_nativePlayerItemWithAsset:CKNativeAsset(asset) automaticallyLoadedAssetKeys:keys];
+}
+- (instancetype)ck_nativeInitWithURL:(NSURL *)url {
+    id context = CKNativeContext(url);
+    AVPlayerItem *item = [self ck_nativeInitWithURL:CKContextURL(context) ?: url];
+    CKAttachContext(context, item.asset); return item;
+}
+- (instancetype)ck_nativeInitWithAsset:(AVAsset *)asset {
+    return [self ck_nativeInitWithAsset:CKNativeAsset(asset)];
+}
+- (instancetype)ck_nativeInitWithAsset:(AVAsset *)asset automaticallyLoadedAssetKeys:(NSArray *)keys {
+    return [self ck_nativeInitWithAsset:CKNativeAsset(asset) automaticallyLoadedAssetKeys:keys];
 }
 @end
 static void CKExchange(Class target, SEL original, SEL replacement) {
@@ -247,6 +345,21 @@ __attribute__((constructor)) static void CKBootstrap(void) {
         CKExchange(AVPlayer.class, @selector(initWithPlayerItem:), @selector(ck_initWithPlayerItem:));
         CKExchange(AVPlayer.class, @selector(initWithURL:), @selector(ck_initWithURL:));
         CKExchange(AVPlayer.class, @selector(replaceCurrentItemWithPlayerItem:), @selector(ck_replaceCurrentItemWithPlayerItem:));
+        CKExchange(AVPlayer.class, @selector(play), @selector(ck_play));
+        CKExchange(AVPlayer.class, @selector(pause), @selector(ck_pause));
+        CKExchange(AVPlayer.class, @selector(setRate:), @selector(ck_setRate:));
+        CKExchange(AVPlayer.class, @selector(playImmediatelyAtRate:), @selector(ck_playImmediatelyAtRate:));
+        CKExchange(object_getClass(AVPlayer.class), @selector(playerWithURL:), @selector(ck_nativePlayerWithURL:));
+        CKExchange(AVURLAsset.class, @selector(initWithURL:options:), @selector(ck_nativeInitWithURL:options:));
+        CKExchange(object_getClass(AVURLAsset.class), @selector(URLAssetWithURL:options:), @selector(ck_nativeURLAssetWithURL:options:));
+        CKExchange(AVPlayerItem.class, @selector(initWithURL:), @selector(ck_nativeInitWithURL:));
+        CKExchange(AVPlayerItem.class, @selector(initWithAsset:), @selector(ck_nativeInitWithAsset:));
+        CKExchange(AVPlayerItem.class, @selector(initWithAsset:automaticallyLoadedAssetKeys:),
+                   @selector(ck_nativeInitWithAsset:automaticallyLoadedAssetKeys:));
+        CKExchange(object_getClass(AVPlayerItem.class), @selector(playerItemWithURL:), @selector(ck_nativePlayerItemWithURL:));
+        CKExchange(object_getClass(AVPlayerItem.class), @selector(playerItemWithAsset:), @selector(ck_nativePlayerItemWithAsset:));
+        CKExchange(object_getClass(AVPlayerItem.class), @selector(playerItemWithAsset:automaticallyLoadedAssetKeys:),
+                   @selector(ck_nativePlayerItemWithAsset:automaticallyLoadedAssetKeys:));
         // UI is installed after launch, outside the loader's initialization stack.
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:NSOperationQueue.mainQueue
             usingBlock:^(NSNotification *note) {

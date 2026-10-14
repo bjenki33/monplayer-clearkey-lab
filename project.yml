@@ -38,6 +38,7 @@ targets:
       path: build/CKHost-Info.plist
       properties:
         CKNativeLinkMode: true
+        CKOriginalPlayerMode: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true # CI host only, for owned loopback HTTP fixtures.
     settings:

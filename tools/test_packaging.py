@@ -51,6 +51,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(result['CFBundleIdentifier'], original['CFBundleIdentifier'])
         self.assertEqual(result['CFBundleDisplayName'], 'MonPlayer')
         self.assertEqual(result['CFBundleVersion'], '132013'); self.assertTrue(result['CKNativeLinkMode'])
+        self.assertTrue(result['CKOriginalPlayerMode'])
         self.assertEqual(result['nativeSetting'], 'retained')
 
     def testExperimentalPackagingStillKeepsSeparateIdentity(self):
@@ -58,6 +59,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(result['CFBundleIdentifier'], 'dev.monplayer.bpfix.proxy.cktest')
         self.assertEqual(result['CFBundleDisplayName'], 'MonPlayer CK TEST')
         self.assertFalse(result['CKNativeLinkMode'])
+        self.assertFalse(result['CKOriginalPlayerMode'])
 
 
 if __name__ == '__main__':

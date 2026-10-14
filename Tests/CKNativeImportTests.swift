@@ -195,6 +195,7 @@ final class CKNativeImportTests: XCTestCase {
     func testOfficialHostCannotInstallOrOpenSeparateTestInputPanel() {
         XCTAssertTrue(CKPresentation.nativeLinks)
         XCTAssertEqual(CKPresentation.playbackLabel, "ClearKey")
+        XCTAssertTrue(CKPresentation.originalPlayer)
         let top = CKRuntime.top()
         CKRuntime.installPanel(); CKRuntime.showPanel()
         XCTAssertTrue(CKRuntime.top() === top)

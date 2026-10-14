@@ -55,10 +55,12 @@ def app_info(data, build, official=False):
     if official:
         info['CFBundleDisplayName'] = 'MonPlayer'
         info['CKNativeLinkMode'] = True
+        info['CKOriginalPlayerMode'] = True
     else:
         info['CFBundleIdentifier'] += '.cktest'
         info['CFBundleDisplayName'] = 'MonPlayer CK TEST'
         info['CKNativeLinkMode'] = False
+        info['CKOriginalPlayerMode'] = False
     info['CFBundleVersion'] = build
     return info
 

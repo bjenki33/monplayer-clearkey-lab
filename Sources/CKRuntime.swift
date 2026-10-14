@@ -9,6 +9,7 @@ enum CKPresentation {
         (info["CKNativeLinkMode"] as? Bool) == true
     }
     static var nativeLinks: Bool { usesNativeLinks(Bundle.main.infoDictionary ?? [:]) }
+    static var originalPlayer: Bool { nativeLinks && (Bundle.main.infoDictionary?["CKOriginalPlayerMode"] as? Bool) == true }
     static var playbackLabel: String { nativeLinks ? "ClearKey" : "CK12" }
 }
 
@@ -37,11 +38,20 @@ enum CKPresentation {
         guard let asset = item.asset as? AVURLAsset else { return false }; return routeURL(asset.url)
     }
     @objc(routeURL:) public static func routeURL(_ url: URL) -> Bool {
+        guard !CKPresentation.originalPlayer else { return false }
         guard placeholderItem() != nil else { nativeEvent(7); return false }
         guard let channel = CKRegistry.shared.channel(url) else { nativeEvent(5); return false }
         nativeEvent(6)
         DispatchQueue.main.async { open(channel) }
         return true
+    }
+    @objc(nativeContextForURL:) public static func nativeContextForURL(_ url: URL) -> NSObject? {
+        guard CKPresentation.originalPlayer, let channel = CKRegistry.shared.channel(url) else { return nil }
+        do { return try CKNativeItems.prepare(channel) }
+        catch { CKDiagnostic.trace("native local media endpoint unavailable"); return nil }
+    }
+    @objc(nativePlaying:rate:) public static func nativePlaying(_ player: AVPlayer, rate: Float) {
+        CKNativeItems.session(player.currentItem)?.playing(rate > 0)
     }
     @objc public static func placeholderItem() -> AVPlayerItem? {
         guard let url = Bundle(for: CKRuntime.self).url(forResource: "CKPlaceholder", withExtension: "mp4") else { return nil }
