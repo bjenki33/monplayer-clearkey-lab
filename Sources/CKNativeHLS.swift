@@ -16,6 +16,7 @@ final class CKNativeStore {
     private(set) var videoPackets = 0, audioPackets = 0
     static let segmentLimit = 16 * 1024 * 1024
     static let memoryLimit = 64 * 1024 * 1024
+    static let startupSegments = 6
     var count: Int { condition.lock(); defer { condition.unlock() }; return segments.count }
     var closed: Bool { condition.lock(); defer { condition.unlock() }; return cancelled }
     var stats: [String: Int] {
@@ -72,7 +73,8 @@ final class CKNativeStore {
         if name == "index.m3u8" {
             manifestRequests += 1
             let deadline = Date(timeIntervalSinceNow: wait)
-            while segments.count < 3 && !terminal { if !condition.wait(until: deadline) { break } }
+            while segments.count < Self.startupSegments && !terminal { if !condition.wait(until: deadline) { break } }
+            guard terminal || segments.count >= Self.startupSegments else { return (503, "text/plain", Data()) }
             guard !failed, !segments.isEmpty else { return (terminal ? 410 : 503, "text/plain", Data()) }
             let target = targetDuration ?? 2
             var text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:\(sequence)\n#EXT-X-DISCONTINUITY-SEQUENCE:\(discardedDiscontinuities)\n#EXT-X-INDEPENDENT-SEGMENTS\n"

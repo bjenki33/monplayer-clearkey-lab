@@ -53,7 +53,7 @@ final class CKNativeRemux {
     }
     private func waitWhilePaused(_ expected: Int) {
         condition.lock(); defer { condition.unlock() }
-        while !stopped && generation == expected && !wantsPlaying && store.count >= 4 {
+        while !stopped && generation == expected && !wantsPlaying && store.count >= CKNativeStore.startupSegments {
             condition.wait(until: Date(timeIntervalSinceNow: 1))
         }
     }
@@ -71,7 +71,9 @@ final class CKNativeRemux {
         defer { avformat_close_input(&input); av_dict_free(&options) }
         let selection = CKDASHSelection.plan(source.data)
         var values = source.keys.formatOptions
-        values.merge(["rw_timeout": "20000000", "tls_verify": "1", "ck_live_delay": "6",
+        // Native HLS starts three target durations behind its published edge.
+        // Prime its window from already-published input rather than future media.
+        values.merge(["rw_timeout": "20000000", "tls_verify": "1", "ck_live_delay": "12",
                       "ck_fragment_retry": "1", "ck_fragment_resume": "1",
                       "protocol_whitelist": "http,https,tcp,tls,crypto,httpproxy"]) { _, new in new }
         if let selection { values["ck_video_representation"] = selection.id }

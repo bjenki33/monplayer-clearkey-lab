@@ -527,7 +527,8 @@ class Handler(BaseHTTPRequestHandler):
                 body, code = target.read_bytes(), 200
                 if path.startswith('/live/') and self.body_fault(session, requested_media, body):
                     return
-                kind = 'application/dash+xml' if target.suffix == '.mpd' else 'video/iso.segment'
+                kind = {'.mpd': 'application/dash+xml', '.m3u8': 'application/vnd.apple.mpegurl',
+                        '.mp4': 'video/mp4'}.get(target.suffix, 'video/iso.segment')
                 encoding = 'gzip' if path.startswith('/gzip/') and target.suffix == '.mpd' else None
                 if encoding:
                     body = gzip.compress(body)

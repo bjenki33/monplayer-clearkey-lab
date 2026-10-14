@@ -7,7 +7,7 @@ import XCTest
 final class CKOriginalPlayerTests: XCTestCase {
     @MainActor
     func testOrdinaryOwnedHTTPHLSActuallyPlays() async throws {
-        try await controlNativeHLS(URL(string: "http://127.0.0.1:18761/plainhls/index.m3u8")!, label: "fixtureHTTP")
+        try await controlNativeHLS(URL(string: "http://127.0.0.1:18761/gzip/plainhls/index.m3u8")!, label: "fixtureHTTP")
     }
 
     @MainActor
@@ -61,11 +61,18 @@ final class CKOriginalPlayerTests: XCTestCase {
         XCTAssertEqual(item.status, .readyToPlay); XCTAssertGreaterThan(player.currentTime().seconds, 0.5)
         XCTAssertNil(CKNativeItems.session(item))
     }
-    private func seeded() throws -> CKNativeStore {
+    private func seeded(count: Int = CKNativeStore.startupSegments) throws -> CKNativeStore {
         let store = CKNativeStore()
         let name = try store.initialize(Data("owned-init".utf8), generation: 0)
-        for _ in 0..<3 { try store.append(Data("owned-segment".utf8), seconds: 2, initName: name, discontinuity: false) }
+        for _ in 0..<count { try store.append(Data("owned-segment".utf8), seconds: 2, initName: name, discontinuity: false) }
         return store
+    }
+    func testNativeInitialPlaylistWaitsForUsableLiveWindow() throws {
+        let store = try seeded(count: 3)
+        XCTAssertEqual(store.response(path: "/\(store.token)/index.m3u8", wait: 0).0, 503)
+        for _ in 0..<3 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
+        XCTAssertEqual(store.response(path: "/\(store.token)/index.m3u8", wait: 0).0, 200)
+        store.close()
     }
     func testNativePlaylistUsesRealFragmentDurationAndInitialization() throws {
         let store = try seeded()
@@ -74,7 +81,7 @@ final class CKOriginalPlayerTests: XCTestCase {
         XCTAssertEqual(status, 200); XCTAssertTrue(text.contains("#EXT-X-VERSION:7"))
         XCTAssertTrue(text.contains("#EXT-X-TARGETDURATION:2"))
         XCTAssertTrue(text.contains("#EXT-X-MAP:URI=\"init0.mp4\""))
-        XCTAssertEqual(text.components(separatedBy: "#EXTINF:").count - 1, 3)
+        XCTAssertEqual(text.components(separatedBy: "#EXTINF:").count - 1, 6)
         XCTAssertFalse(text.contains("#EXT-X-ENDLIST")); store.close()
     }
     func testNativeEndpointRejectsWrongTokenAndTraversal() throws {
@@ -91,7 +98,7 @@ final class CKOriginalPlayerTests: XCTestCase {
         XCTAssertEqual(store.stats["segments"], 18); XCTAssertEqual(store.stats["initializations"], 1)
         XCTAssertEqual(store.response(path: "/\(store.token)/init0.mp4", wait: 0).0, 404)
         let text = String(decoding: store.response(path: "/\(store.token)/index.m3u8", wait: 0).2, as: UTF8.self)
-        XCTAssertTrue(text.contains("#EXT-X-MEDIA-SEQUENCE:4"))
+        XCTAssertTrue(text.contains("#EXT-X-MEDIA-SEQUENCE:7"))
         XCTAssertTrue(text.contains("#EXT-X-DISCONTINUITY-SEQUENCE:1")); store.close()
     }
     func testNativeBuffersHaveHardSizeAndCancellationLimits() throws {
