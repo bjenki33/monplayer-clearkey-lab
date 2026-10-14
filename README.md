@@ -220,7 +220,9 @@ executable sections are unchanged;the module passively observes successful
 native URL/request completions,streamed Alamofire data and downloaded playlists.
 The original callback/data/file/error still reaches its owner unchanged. Final
 response URL resolves relative streams;ordinary/failed responses are not routed.
-Supported ClearKey AVPlayer entries use the existing on-device engine/placeholder.
+With `CKOriginalPlayerMode=true`,supported ClearKey entries retain the original
+AVPlayer/asset/item and playback UI;the prototype controller/placeholder route
+is not used. The independently retained experimental mode is not the official UI.
 No new public server/provider credentials or source are included in this repo.
 
 Owned native completion/download/redirect->registry->actual AVPlayer->moving
@@ -228,6 +230,20 @@ stereo engine tests do NOT execute the supplied ARM64 third-party app's actual
 add-link UI. Manual physical import,relaunch/native cached-source behavior and
 provider access remain separate verification. Metadata/keys stay bounded in
 memory;there is no new raw-key persistence or universal DRM capability.
+
+## Original Player Startup Reserve
+
+Native remuxing stream-copies the selected video/default audio into bounded
+memory-only fMP4 HLS. The asynchronous resource-loader redirect waits for real
+media before handing the ready loopback master to AVPlayer. Live readiness now
+requires at least three complete fragments AND three target durations of media,
+not an unconditional six-GOP wait. Fractional/mixed durations cannot bypass the
+reserve;finite EOF may expose its shorter real tail. Producer pause/backpressure
+checks use the same readiness decision so an app waiting for ready before Play
+does not deadlock. Native automatic stalling policy,TLS/key/transport rules,
+stream-copy quality and the original UI are unchanged. Owned two/four-second
+live fixtures measure first decoded frame and continuing stereo playback;
+physical-device latency and long soaks remain separate release checks.
 
 ## CK11 Stage2B Fragment-Open Transport Recovery
 

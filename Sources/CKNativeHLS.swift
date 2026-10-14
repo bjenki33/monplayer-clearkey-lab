@@ -18,7 +18,7 @@ final class CKNativeStore {
     private(set) var videoPackets = 0, audioPackets = 0
     static let segmentLimit = 16 * 1024 * 1024
     static let memoryLimit = 64 * 1024 * 1024
-    static let startupSegments = 6
+    static let startupSegments = 3
     var count: Int { condition.lock(); defer { condition.unlock() }; return segments.count }
     var closed: Bool { condition.lock(); defer { condition.unlock() }; return cancelled }
     var stats: [String: Int] {
@@ -32,16 +32,23 @@ final class CKNativeStore {
         if !terminal && nextNumber - requestedThrough >= 7 { condition.wait(until: Date(timeIntervalSinceNow: 0.2)) }
     }
     var ahead: Int { condition.lock(); defer { condition.unlock() }; return nextNumber - requestedThrough }
+    // Keep the HLS three-target-duration safety window without always waiting
+    // for six GOPs. Count alone is unsafe for short or fractional fragments.
+    private var readyLocked: Bool {
+        !failed && !cancelled && !segments.isEmpty &&
+            (terminal || (segments.count >= Self.startupSegments &&
+                segments.reduce(0, { $0 + $1.seconds }) + 0.000001 >= Double((targetDuration ?? 2) * 3)))
+    }
+    var ready: Bool { condition.lock(); defer { condition.unlock() }; return readyLocked }
     func waitUntilReady(seconds: TimeInterval, interrupted: () -> Bool = { false }) -> Bool {
         condition.lock(); defer { condition.unlock() }
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
-        while !terminal && segments.count < Self.startupSegments && !interrupted() {
+        while !terminal && !readyLocked && !interrupted() {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             if remaining <= 0 { return false }
             condition.wait(until: Date(timeIntervalSinceNow: min(0.2, remaining)))
         }
-        return !interrupted() && !failed && !cancelled && !segments.isEmpty &&
-            (terminal || segments.count >= Self.startupSegments)
+        return !interrupted() && readyLocked
     }
     func describe(bandwidth: Int64, codecs: String?) {
         condition.lock(); defer { condition.unlock() }
@@ -103,8 +110,8 @@ final class CKNativeStore {
         if name == "media.m3u8" {
             if recordRequest { manifestRequests += 1 }
             let deadline = Date(timeIntervalSinceNow: wait)
-            while segments.count < Self.startupSegments && !terminal { if !condition.wait(until: deadline) { break } }
-            guard terminal || segments.count >= Self.startupSegments else { return (503, "text/plain", Data()) }
+            while !readyLocked && !terminal { if !condition.wait(until: deadline) { break } }
+            guard readyLocked else { return (terminal ? 410 : 503, "text/plain", Data()) }
             guard !failed, !segments.isEmpty else { return (terminal ? 410 : 503, "text/plain", Data()) }
             let target = targetDuration ?? 2
             var text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:\(sequence)\n#EXT-X-DISCONTINUITY-SEQUENCE:\(discardedDiscontinuities)\n#EXT-X-INDEPENDENT-SEGMENTS\n"

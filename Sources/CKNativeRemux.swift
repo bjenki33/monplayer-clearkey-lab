@@ -53,7 +53,7 @@ final class CKNativeRemux {
     }
     private func waitWhilePaused(_ expected: Int) {
         condition.lock(); defer { condition.unlock() }
-        while !stopped && generation == expected && !wantsPlaying && store.count >= CKNativeStore.startupSegments {
+        while !stopped && generation == expected && !wantsPlaying && store.ready {
             condition.wait(until: Date(timeIntervalSinceNow: 1))
         }
     }
@@ -164,7 +164,7 @@ final class CKNativeRemux {
         while !interrupted(generation) {
             waitWhilePaused(generation)
             if interrupted(generation) { return false }
-            while store.ahead >= 7 && !interrupted(generation) { store.waitForDemand() }
+            while store.ready && store.ahead >= 7 && !interrupted(generation) { store.waitForDemand() }
             if interrupted(generation) { return false }
             let result = av_read_frame(context, p)
             if result < 0 {

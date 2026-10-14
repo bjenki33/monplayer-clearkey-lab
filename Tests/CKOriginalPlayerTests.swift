@@ -169,17 +169,17 @@ final class CKOriginalPlayerTests: XCTestCase {
         return store
     }
     func testNativeInitialPlaylistWaitsForUsableLiveWindow() throws {
-        let store = try seeded(count: 3)
+        let store = try seeded(count: 2)
         let master = store.response(path: "/\(store.token)/index.m3u8", wait: 0)
         XCTAssertEqual(master.0, 200)
         XCTAssertTrue(String(decoding: master.2, as: UTF8.self).contains("#EXT-X-STREAM-INF:"))
         XCTAssertEqual(store.response(path: "/\(store.token)/media.m3u8", wait: 0).0, 503)
-        for _ in 0..<3 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
+        try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false)
         XCTAssertEqual(store.response(path: "/\(store.token)/media.m3u8", wait: 0).0, 200)
         store.close()
     }
     func testNativePlaylistUsesRealFragmentDurationAndInitialization() throws {
-        let store = try seeded()
+        let store = try seeded(count: 6)
         let (status, _, data) = store.response(path: "/\(store.token)/media.m3u8", wait: 0)
         let text = String(decoding: data, as: UTF8.self)
         XCTAssertEqual(status, 200); XCTAssertTrue(text.contains("#EXT-X-VERSION:7"))
@@ -196,7 +196,7 @@ final class CKOriginalPlayerTests: XCTestCase {
         store.close()
     }
     func testNativeRingPrunesOnlyCompleteOldFragmentsAndInitializations() throws {
-        let store = try seeded()
+        let store = try seeded(count: 6)
         let next = try store.initialize(Data("owned-next-init".utf8), generation: 1)
         for index in 0..<19 { try store.append(Data([UInt8(index)]), seconds: 2, initName: next, discontinuity: index == 0) }
         XCTAssertEqual(store.stats["segments"], 18); XCTAssertEqual(store.stats["initializations"], 1)
@@ -254,6 +254,66 @@ final class CKOriginalPlayerTests: XCTestCase {
         for _ in 0..<6 { try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false) }
         XCTAssertTrue(store.waitUntilReady(seconds: 0))
         store.close(); XCTAssertFalse(store.waitUntilReady(seconds: 0))
+    }
+    func testNativeWarmupUsesDurationNotJustThreeFragments() throws {
+        let store = CKNativeStore(), name = try store.initialize(Data([1]), generation: 0)
+        for _ in 0..<3 { try store.append(Data([1]), seconds: 1.8, initName: name, discontinuity: false) }
+        XCTAssertFalse(store.ready); XCTAssertFalse(store.waitUntilReady(seconds: 0))
+        XCTAssertEqual(store.response(path: "/\(store.token)/media.m3u8", wait: 0).0, 503)
+        try store.append(Data([1]), seconds: 1.8, initName: name, discontinuity: false)
+        XCTAssertTrue(store.ready); XCTAssertTrue(store.waitUntilReady(seconds: 0))
+        XCTAssertEqual(store.response(path: "/\(store.token)/media.m3u8", wait: 0).0, 200)
+        store.close()
+    }
+    func testNativeLongFragmentsDoNotRequireSixGOPs() throws {
+        let store = CKNativeStore(), name = try store.initialize(Data([1]), generation: 0)
+        for _ in 0..<3 { try store.append(Data([1]), seconds: 4, initName: name, discontinuity: false) }
+        XCTAssertEqual(store.count, 3); XCTAssertTrue(store.ready)
+        XCTAssertTrue(store.waitUntilReady(seconds: 0))
+        let text = String(decoding: store.response(path: "/\(store.token)/media.m3u8", wait: 0).2, as: UTF8.self)
+        XCTAssertTrue(text.contains("#EXT-X-TARGETDURATION:4"))
+        XCTAssertEqual(text.components(separatedBy: "#EXTINF:").count - 1, 3)
+        store.close()
+    }
+    func testNativeMixedFragmentReserveMayNeedMoreThanSixFragments() throws {
+        let store = CKNativeStore(), name = try store.initialize(Data([1]), generation: 0)
+        try store.append(Data([1]), seconds: 6, initName: name, discontinuity: false)
+        for _ in 0..<6 { try store.append(Data([1]), seconds: 1.8, initName: name, discontinuity: false) }
+        XCTAssertEqual(store.count, 7); XCTAssertFalse(store.ready)
+        try store.append(Data([1]), seconds: 1.8, initName: name, discontinuity: false)
+        XCTAssertTrue(store.ready); store.close()
+    }
+    func testNativeWarmupWaitWakesWhenDurationReserveArrives() async throws {
+        let store = try seeded(count: 2)
+        defer { store.close() }
+        let waiter = Task.detached { store.waitUntilReady(seconds: 5) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try store.append(Data([1]), seconds: 2, initName: "init0.mp4", discontinuity: false)
+        let began = ProcessInfo.processInfo.systemUptime
+        let ready = await waiter.value
+        XCTAssertTrue(ready)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - began, 1.5)
+    }
+    func testNativeFiniteShortTailIsReadyAndFailuresAreNotReady() throws {
+        let store = try seeded(count: 1)
+        XCTAssertFalse(store.ready); store.finish(); XCTAssertTrue(store.ready)
+        XCTAssertTrue(store.waitUntilReady(seconds: 0))
+        store.close(); XCTAssertFalse(store.ready)
+        let failed = try seeded(); XCTAssertTrue(failed.ready)
+        failed.close(failure: true); XCTAssertFalse(failed.ready)
+        XCTAssertFalse(failed.waitUntilReady(seconds: 0))
+    }
+    @MainActor
+    func testOriginalItemBecomesReadyBeforeOriginalAppRequestsPlay() async throws {
+        _ = try await CKNativeFixtures.load("nativepreplayready")
+        let item = AVPlayerItem(url: CKNativeFixtures.media("nativepreplayready"))
+        let player = AVPlayer(playerItem: item)
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
+        try await waitFor { item.status == .readyToPlay }
+        XCTAssertEqual(player.rate, 0)
+        XCTAssertTrue(try XCTUnwrap(CKNativeItems.session(item)).store.ready)
+        player.play(); try await waitFor { player.timeControlStatus == .playing && player.currentTime().seconds > 0.3 }
+        XCTAssertTrue(player.currentItem === item); XCTAssertNil(CKRuntime.presentedController)
     }
     @MainActor
     func testOriginalItemIdentityStatusAndPlayPauseRemainNative() async throws {
