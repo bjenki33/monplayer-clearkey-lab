@@ -201,7 +201,7 @@ enum CKM3UFocusedRouteReflection {
 
     private static func wrapper(_ typeName: String) -> Bool {
         ["Swift.Optional<", "Swift.Array<", "Swift.ContiguousArray<", "SwiftUI.", "Combine.Published<"]
-            .contains { typeName.hasPrefix($0) }
+            .contains { typeName.hasPrefix($0) } || typeName.hasPrefix("Swift._") || typeName.hasPrefix("(")
     }
 
     static func snapshot(_ roots: [Any], nodes: Int = 64, depth: Int = 28,

@@ -209,6 +209,8 @@ final class CKM3URouteProbeTests: XCTestCase {
         let marker: Int
         let some: OwnedFocusedRouter
     }
+    private struct OwnedFocusedTupleCarrier { let router: OwnedFocusedRouter }
+    private struct OwnedFocusedInternalCarrier { let some: OwnedFocusedRouter }
     private struct OwnedFocusedEmptyCarrier { let marker: Int }
     private struct OwnedFocusedRoot { let _router: OwnedFocusedRouter }
     private struct OwnedFocusedHost {
@@ -235,6 +237,8 @@ final class CKM3URouteProbeTests: XCTestCase {
         if value is OwnedFocusedHost { return "UIKit.UIHostingController<MonPlayer.Root>" }
         if value is OwnedFocusedRoot { return "SwiftUI.ModifiedContent<MonPlayer.Root, SwiftUI.Environment>" }
         if value is OwnedFocusedCarrier { return "Swift.Optional<MonPlayer.AppRouter>" }
+        if value is OwnedFocusedTupleCarrier { return "(MonPlayer.AppRouter, MonPlayer.PlayerViewModel)" }
+        if value is OwnedFocusedInternalCarrier { return "Swift._Owned<MonPlayer.AppRouter>" }
         if value is OwnedFocusedEmptyCarrier { return "Swift.Optional<MonPlayer.AppRouter>" }
         if value is OwnedFocusedRouter { return "MonPlayer.AppRouter" }
         if value is OwnedFocusedPublished<[OwnedRoute]> { return "Combine.Published<Swift.Array<MonPlayer.AppRoute>>" }
@@ -276,6 +280,28 @@ final class CKM3URouteProbeTests: XCTestCase {
                                                    "focused-route", "case-m3u-provider"]))
         XCTAssertFalse(focused.tags.contains("case-json-provider"))
         XCTAssertFalse(focused.summary.contains("owned-private"))
+    }
+    func testM3UFocusedRouteUnwrapsTupleRouterCarrier() {
+        let carrier = OwnedFocusedTupleCarrier(router: OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerM3UDetail("owned-private-route-payload")]))))
+        let scan = CKM3UProbeReflection.scan([carrier], nodes: 1,
+            typeNameFor: focusedNames, clock: { 0 })
+        guard let selected = scan.focusedRouter else { return XCTFail("tuple carrier handoff missing") }
+        let focused = CKM3UFocusedRouteReflection.snapshot([selected], typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertTrue(focused.tags.isSuperset(of: ["focused-carrier", "focused-router", "focused-path",
+                                                   "focused-route", "case-m3u-provider"]))
+        XCTAssertFalse(focused.summary.contains("owned-private")); XCTAssertFalse(focused.truncated)
+    }
+    func testM3UFocusedRouteUnwrapsSwiftInternalRouterCarrier() {
+        let carrier = OwnedFocusedInternalCarrier(some: OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerM3UDetail("owned-private-route-payload")]))))
+        let scan = CKM3UProbeReflection.scan([carrier], nodes: 1,
+            typeNameFor: focusedNames, clock: { 0 })
+        guard let selected = scan.focusedRouter else { return XCTFail("Swift internal carrier handoff missing") }
+        let focused = CKM3UFocusedRouteReflection.snapshot([selected], typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertTrue(focused.tags.isSuperset(of: ["focused-carrier", "focused-router", "focused-path",
+                                                   "focused-route", "case-m3u-provider"]))
+        XCTAssertFalse(focused.summary.contains("owned-private")); XCTAssertFalse(focused.truncated)
     }
     func testM3UGenericScanPrefersLaterExactRouterOverCarrier() {
         let carrier = OwnedFocusedEmptyCarrier(marker: 1)
