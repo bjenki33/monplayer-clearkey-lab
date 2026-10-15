@@ -19,7 +19,9 @@ enum CKM3UProbePolicy {
         "providerJsonDetail": "case-json-provider", "groupJsonDetail": "case-json-group",
         "channelJsonDetail": "case-json-channel", "player": "case-player", "streamLoading": "case-stream-loading"
     ]
-    static let focusedTags: Set<String> = ["focused-root", "focused-router", "focused-path", "focused-route"]
+    static let focusedTags: Set<String> = [
+        "focused-root", "focused-carrier", "focused-router", "focused-path", "focused-route"
+    ]
     static var allowedTags: Set<String> { Set(names.values).union(cases.values).union(focusedTags) }
     static let fields: Set<String> = [
         "rootView", "_rootView", "root", "host", "content", "storage", "_storage",
@@ -82,8 +84,8 @@ struct CKM3UProbeSnapshot: Equatable {
 
 struct CKM3UProbeScanResult {
     let snapshot: CKM3UProbeSnapshot
-    // Retained only for the current tick so the focused walker can start at the
-    // exact router already proven by the bounded generic traversal.
+    // Retained only for the current tick. An exact router replaces a fallback
+    // carrier whose reflected type contains the exact AppRouter token.
     let focusedRouter: Any?
 }
 
@@ -110,6 +112,7 @@ enum CKM3UProbeReflection {
                      clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> CKM3UProbeScanResult {
         var result = CKM3UProbeSnapshot(), pending = roots.prefix(64).reversed().map { ($0, 0) }
         var focusedRouter: Any?
+        var focusedRouterIsExact = false
         var scheduled = pending.count, objects: Set<ObjectIdentifier> = []
         var typeNames: [ObjectIdentifier: String] = [:]
         func limit(_ reason: String) { result.truncated = true; result.limits.insert(reason) }
@@ -129,9 +132,15 @@ enum CKM3UProbeReflection {
             guard clock() - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
             let (value, level) = pending.removeLast(); result.visited += 1
             let typeName = name(value)
-            if focusedRouter == nil, typeName == "MonPlayer.AppRouter" { focusedRouter = value }
-            result.tags.formUnion(CKM3UProbePolicy.tags(typeName: typeName))
-            guard CKM3UProbePolicy.traversable(typeName) else { continue }
+            let tags = CKM3UProbePolicy.tags(typeName: typeName)
+            let traversable = CKM3UProbePolicy.traversable(typeName)
+            if typeName == "MonPlayer.AppRouter" {
+                if !focusedRouterIsExact { focusedRouter = value; focusedRouterIsExact = true }
+            } else if focusedRouter == nil, traversable, tags.contains("router") {
+                focusedRouter = value
+            }
+            result.tags.formUnion(tags)
+            guard traversable else { continue }
             guard level < max(0, min(depth, 18)) else { limit("depth"); continue }
             let mirror = Mirror(reflecting: value)
             if mirror.displayStyle == .class {
@@ -221,6 +230,10 @@ enum CKM3UFocusedRouteReflection {
             var item = pending.removeLast(); result.visited += 1
             let typeName = name(item.value)
             result.tags.formUnion(CKM3UProbePolicy.exactTags(typeName: typeName))
+            if typeName != "MonPlayer.AppRouter",
+               CKM3UProbePolicy.tags(typeName: typeName).contains("router") {
+                result.tags.insert("focused-carrier")
+            }
             if typeName == "MonPlayer.AppRouter" {
                 item = Pending(value: item.value, level: item.level, stage: .router)
                 result.tags.formUnion(["router", "focused-router"])
