@@ -80,6 +80,13 @@ struct CKM3UProbeSnapshot: Equatable {
     }
 }
 
+struct CKM3UProbeScanResult {
+    let snapshot: CKM3UProbeSnapshot
+    // Retained only for the current tick so the focused walker can start at the
+    // exact router already proven by the bounded generic traversal.
+    let focusedRouter: Any?
+}
+
 enum CKM3UProbeReflection {
     static let limitNames: Set<String> = Set(["roots", "nodes", "time", "depth", "children", "ancestors", "queue", "types"])
         .union(CKM3UFocusedRouteReflection.limitNames)
@@ -94,7 +101,15 @@ enum CKM3UProbeReflection {
                          seconds: TimeInterval = 0.012,
                          typeNameFor: ((Any) -> String)? = nil,
                          clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> CKM3UProbeSnapshot {
+        scan(roots, nodes: nodes, depth: depth, seconds: seconds,
+             typeNameFor: typeNameFor, clock: clock).snapshot
+    }
+    static func scan(_ roots: [Any], nodes: Int = 256, depth: Int = 18,
+                     seconds: TimeInterval = 0.012,
+                     typeNameFor: ((Any) -> String)? = nil,
+                     clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> CKM3UProbeScanResult {
         var result = CKM3UProbeSnapshot(), pending = roots.prefix(64).reversed().map { ($0, 0) }
+        var focusedRouter: Any?
         var scheduled = pending.count, objects: Set<ObjectIdentifier> = []
         var typeNames: [ObjectIdentifier: String] = [:]
         func limit(_ reason: String) { result.truncated = true; result.limits.insert(reason) }
@@ -114,6 +129,7 @@ enum CKM3UProbeReflection {
             guard clock() - began < max(0, min(seconds, 0.012)) else { limit("time"); break }
             let (value, level) = pending.removeLast(); result.visited += 1
             let typeName = name(value)
+            if focusedRouter == nil, typeName == "MonPlayer.AppRouter" { focusedRouter = value }
             result.tags.formUnion(CKM3UProbePolicy.tags(typeName: typeName))
             guard CKM3UProbePolicy.traversable(typeName) else { continue }
             guard level < max(0, min(depth, 18)) else { limit("depth"); continue }
@@ -150,7 +166,7 @@ enum CKM3UProbeReflection {
             // Descend the selected root/router chain before unrelated sibling views.
             pending.append(contentsOf: next.reversed().map { ($0.value, level + 1) })
         }
-        return result
+        return CKM3UProbeScanResult(snapshot: result, focusedRouter: focusedRouter)
     }
 }
 
@@ -320,8 +336,11 @@ final class CKM3URouteProbe {
             if name.hasPrefix("SwiftUI.") || name.hasPrefix("MonPlayer.") { roots.append(view) }
             for child in view.subviews.prefix(16) where views.count < 128 { views.append(child) }
         }
-        var snapshot = CKM3UProbeReflection.snapshot(roots)
-        snapshot.merge(CKM3UFocusedRouteReflection.snapshot([controller]))
+        let scan = CKM3UProbeReflection.scan(roots)
+        var snapshot = scan.snapshot
+        if let router = scan.focusedRouter {
+            snapshot.merge(CKM3UFocusedRouteReflection.snapshot([router]))
+        }
         if previous?.tags != snapshot.tags || previous?.fields != snapshot.fields || previous == nil {
             previous = snapshot; emitted += 1
             evidence?.update(.sample, ticks: ticks, seconds: foregroundSeconds,

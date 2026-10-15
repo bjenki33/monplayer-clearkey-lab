@@ -198,7 +198,13 @@ final class CKM3URouteProbeTests: XCTestCase {
 
     private struct OwnedFocusedPublished<Value> { let storage: OwnedFocusedStorage<Value> }
     private struct OwnedFocusedStorage<Value> { let value: Value }
-    private struct OwnedFocusedRouter { let _path: OwnedFocusedPublished<[OwnedRoute]> }
+    private struct OwnedFocusedRouter {
+        let marker: Int
+        let _path: OwnedFocusedPublished<[OwnedRoute]>
+        init(marker: Int = 0, _path: OwnedFocusedPublished<[OwnedRoute]>) {
+            self.marker = marker; self._path = _path
+        }
+    }
     private struct OwnedFocusedRoot { let _router: OwnedFocusedRouter }
     private struct OwnedFocusedHost {
         let _rootView: OwnedFocusedRoot
@@ -233,6 +239,37 @@ final class CKM3URouteProbeTests: XCTestCase {
         if value is OwnedFocusedScalarContainer { return "SwiftUI.OwnedFocusedScalarContainer" }
         if value is OwnedFocusedReflectable { return "Swift.String" }
         return String(reflecting: type(of: value))
+    }
+    func testM3UGenericScanHandsOnlyFirstExactRouterToFocusedRoute() {
+        let m3u = OwnedFocusedRouter(marker: 1, _path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerM3UDetail("owned-private-route-payload")])))
+        let json = OwnedFocusedRouter(marker: 2, _path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerJsonDetail("owned-private-route-payload")])))
+        let scan = CKM3UProbeReflection.scan([m3u, json], typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertEqual(CKM3UProbePolicy.branch(scan.snapshot.tags), "ambiguous")
+        XCTAssertEqual((scan.focusedRouter as? OwnedFocusedRouter)?.marker, 1)
+        guard let router = scan.focusedRouter else { return XCTFail("exact router handoff missing") }
+        let focused = CKM3UFocusedRouteReflection.snapshot([router], typeNameFor: focusedNames, clock: { 0 })
+        XCTAssertTrue(focused.tags.isSuperset(of: ["focused-router", "focused-path", "focused-route",
+                                                   "router", "route", "case-m3u-provider"]))
+        XCTAssertFalse(focused.tags.contains("case-json-provider"))
+        XCTAssertFalse(focused.summary.contains("owned-private"))
+    }
+    func testM3UGenericScanRejectsRouterLookalikeAndScalar() {
+        let router = OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
+            OwnedFocusedStorage(value: [.providerM3UDetail("owned-private-route-payload")])))
+        let lookalike = CKM3UProbeReflection.scan([router], typeNameFor: { _ in "OtherApp.AppRouter" }, clock: { 0 })
+        let scalar = CKM3UProbeReflection.scan(["MonPlayer.AppRouter"], clock: { 0 })
+        XCTAssertNil(lookalike.focusedRouter); XCTAssertNil(scalar.focusedRouter)
+        XCTAssertTrue(lookalike.snapshot.tags.isEmpty); XCTAssertTrue(scalar.snapshot.tags.isEmpty)
+    }
+    func testM3UGenericScanExpiredBudgetCannotHandOffRouter() {
+        var typeLookups = 0
+        let router = OwnedFocusedRouter(_path: OwnedFocusedPublished(storage: OwnedFocusedStorage(value: [])))
+        let scan = CKM3UProbeReflection.scan([router], seconds: 0,
+            typeNameFor: { value in typeLookups += 1; return self.focusedNames(value) })
+        XCTAssertNil(scan.focusedRouter); XCTAssertEqual(scan.snapshot.visited, 0)
+        XCTAssertEqual(scan.snapshot.limits, ["time"]); XCTAssertEqual(typeLookups, 0)
     }
     func testM3UFocusedRouteWalksRootRouterPublishedPathToM3UCase() {
         let router = OwnedFocusedRouter(_path: OwnedFocusedPublished(storage:
